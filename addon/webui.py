@@ -49,6 +49,10 @@ def _force_check(udid: str) -> dict[str, Any]:
     )
     hub = result.get("hub") or prev_entry.get("hub")
     watch = result.get("watch") or prev_entry.get("watch")
+    accessories = result.get("accessories")
+    if accessories is None:
+        accessories = prev_entry.get("accessories") or []
+    hub_ok = hub and hub.get("battery_level") is not None
     entry = {
         "udid": dev["udid"],
         "host": dev["host"],
@@ -56,8 +60,9 @@ def _force_check(udid: str) -> dict[str, Any]:
         "product_type": (hub or {}).get("product_type") or dev.get("product_type"),
         "hub": hub,
         "watch": watch,
-        "accessories": result.get("accessories") or prev_entry.get("accessories") or [],
-        "error": result.get("error"),
+        "accessories": accessories,
+        "error": result.get("error") if not hub_ok else None,
+        "accessory_note": result.get("accessory_note"),
     }
 
     ordered = []
@@ -90,7 +95,7 @@ def _force_check(udid: str) -> dict[str, Any]:
         "phone_udid": ordered[0]["udid"] if ordered else udid,
         "phone": ordered[0].get("hub") if ordered else hub,
         "watch": ordered[0].get("watch") if ordered else watch,
-        "error": result.get("error"),
+        "error": entry.get("error") if not hub_ok else None,
     }
     prim = (store.get("devices") or [{}])[0]
     if prim.get("udid") == udid:
@@ -105,6 +110,87 @@ def _force_check(udid: str) -> dict[str, Any]:
     tmp.write_text(json.dumps(doc, indent=2, default=str))
     tmp.replace(BATTERY_JSON)
     return {"result": result, "battery": doc}
+
+
+def _force_discover(udid: str) -> dict[str, Any]:
+    """Re-scan companion registry for Watch / AirPods / other accessories."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    import rsd_battery as rb
+
+    store = load_store()
+    dev = next((d for d in store.get("devices") or [] if d.get("udid") == udid), None)
+    if not dev:
+        raise RuntimeError("device not found")
+
+    prev: dict[str, Any] = {}
+    try:
+        if BATTERY_JSON.exists():
+            prev = json.loads(BATTERY_JSON.read_text())
+    except Exception:
+        prev = {}
+    prev_entry = next(
+        (e for e in (prev.get("devices") or []) if e.get("udid") == udid),
+        {},
+    )
+
+    comp = asyncio.run(
+        rb._companion_via_remotepairing(host=dev["host"], udid=dev["udid"])
+    )
+    if comp.get("watch") or comp.get("accessories"):
+        watch = comp.get("watch") or prev_entry.get("watch")
+        accessories = comp.get("accessories") or []
+    else:
+        watch = prev_entry.get("watch")
+        accessories = prev_entry.get("accessories") or []
+    hub = prev_entry.get("hub")
+
+    entry = {
+        "udid": dev["udid"],
+        "host": dev["host"],
+        "name": prev_entry.get("name") or dev.get("name"),
+        "product_type": prev_entry.get("product_type") or dev.get("product_type"),
+        "hub": hub,
+        "watch": watch,
+        "accessories": accessories,
+        "error": prev_entry.get("error"),
+        "accessory_note": comp.get("error"),
+    }
+
+    ordered = []
+    for d in store.get("devices") or []:
+        if d.get("udid") == udid:
+            ordered.append(entry)
+        else:
+            old = next(
+                (e for e in (prev.get("devices") or []) if e.get("udid") == d.get("udid")),
+                None,
+            )
+            ordered.append(old or {"udid": d["udid"], "host": d["host"], "name": d.get("name")})
+
+    doc = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "path": "remotepairing-userspace-rsd",
+        "devices": ordered,
+        "phone_udid": prev.get("phone_udid"),
+        "phone": prev.get("phone"),
+        "watch": prev.get("watch"),
+        "error": prev.get("error"),
+    }
+    prim = (store.get("devices") or [{}])[0]
+    if prim.get("udid") == udid:
+        doc["phone_udid"] = udid
+        if hub:
+            doc["phone"] = hub
+        if watch:
+            doc["watch"] = watch
+
+    BATTERY_JSON.parent.mkdir(parents=True, exist_ok=True)
+    tmp = BATTERY_JSON.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc, indent=2, default=str))
+    tmp.replace(BATTERY_JSON)
+    return {"companion": comp, "battery": doc}
 
 def _read_battery() -> dict[str, Any]:
     try:
@@ -225,6 +311,10 @@ class Handler(BaseHTTPRequestHandler):
                 udid = str(body.get("udid") or "")
                 host = str(body.get("host") or "")
                 self._json(200, verify_device(udid, host))
+                return
+            if api.startswith("/api/devices/") and api.endswith("/discover"):
+                udid = api[len("/api/devices/") : -len("/discover")]
+                self._json(200, _force_discover(udid))
                 return
             if api.startswith("/api/devices/") and api.endswith("/check"):
                 udid = api[len("/api/devices/") : -len("/check")]

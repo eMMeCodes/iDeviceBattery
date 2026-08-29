@@ -100,7 +100,64 @@ async def _phone_battery(rec: dict[str, Any], host: str | None = None, udid: str
         await phone_ld.close()
 
 
-async def _watch_via_remotepairing(host: str | None = None, udid: str | None = None) -> dict[str, Any]:
+async def _fetch_companion_device(
+    companion: Any, device_udid: str
+) -> dict[str, Any] | None:
+    name = product = level = is_charging = None
+    for key in (
+        "DeviceName",
+        "ProductType",
+        "BatteryCurrentCapacity",
+        "BatteryIsCharging",
+    ):
+        try:
+            val = await companion.get_value(device_udid, key)
+        except Exception as e:
+            print(f"COMPANION_{device_udid[:8]}_{key}_FAIL {e}", flush=True)
+            continue
+        if isinstance(val, dict) and key in val:
+            val = val[key]
+        if key == "DeviceName":
+            name = val
+        elif key == "ProductType":
+            product = val
+        elif key == "BatteryCurrentCapacity":
+            level = int(val) if val is not None else None
+        elif key == "BatteryIsCharging":
+            is_charging = bool(val)
+
+    if level is None and not name and not product:
+        return None
+
+    plugged = bool(is_charging)
+    state = "charging" if plugged else "Not Charging"
+    return {
+        "udid": device_udid,
+        "name": name,
+        "product_type": product,
+        "battery_level": level,
+        "battery_state": state,
+    }
+
+
+def _companion_item_udid(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("UDID") or item.get("udid") or item)
+    return str(item)
+
+
+def _is_watch_device(info: dict[str, Any]) -> bool:
+    product = str(info.get("product_type") or "")
+    udid = str(info.get("udid") or "")
+    if product.startswith("Watch"):
+        return True
+    return udid.startswith("00008310")
+
+
+async def _companion_via_remotepairing(
+    host: str | None = None, udid: str | None = None
+) -> dict[str, Any]:
+    """List all companion devices (Watch, AirPods, …) exposed by the hub."""
     from pymobiledevice3.remote import tunnel_service
     from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
     from pymobiledevice3.remote.tunnel_service import get_remote_pairing_tunnel_services
@@ -109,6 +166,7 @@ async def _watch_via_remotepairing(host: str | None = None, udid: str | None = N
 
     use_udid = udid or UDID
     use_host = host or HOST
+    result: dict[str, Any] = {"watch": None, "accessories": [], "error": None}
 
     tunnel_service.USE_USERSPACE_TUNNEL = True
     tunnel_service.RemotePairingTcpTunnel.REQUESTED_MTU = DEFAULT_MTU
@@ -117,7 +175,7 @@ async def _watch_via_remotepairing(host: str | None = None, udid: str | None = N
         services = await get_remote_pairing_tunnel_services(udid=use_udid)
         if not services:
             raise RuntimeError(
-                "no RemotePairing on Bonjour; unlock hub or re-run Add wizard"
+                "no RemotePairing on Bonjour; unlock the device and keep Wi‑Fi on"
             )
         provider = next(
             (s for s in services if getattr(s, "hostname", None) == use_host),
@@ -146,53 +204,55 @@ async def _watch_via_remotepairing(host: str | None = None, udid: str | None = N
         print("RSD_OK", flush=True)
 
         companion = CompanionProxyService(rsd)
-        watches = await companion.list()
-        print(f"WATCH_LIST {watches}", flush=True)
-        if not watches:
-            raise RuntimeError("no paired watches in companion registry")
+        listed = await companion.list()
+        print(f"COMPANION_LIST {listed}", flush=True)
+        if not listed:
+            result["error"] = "no accessories in companion registry"
+            return result
 
-        watch_udid = watches[0]
-        if isinstance(watch_udid, dict):
-            watch_udid = watch_udid.get("UDID") or str(watch_udid)
-        watch_udid = str(watch_udid)
-
-        name = product = level = is_charging = None
-        for key in (
-            "DeviceName",
-            "ProductType",
-            "BatteryCurrentCapacity",
-            "BatteryIsCharging",
-        ):
-            try:
-                val = await companion.get_value(watch_udid, key)
-            except Exception as e:
-                print(f"WATCH_{key}_FAIL {e}", flush=True)
+        watch: dict[str, Any] | None = None
+        accessories: list[dict[str, Any]] = []
+        for item in listed:
+            dev_udid = _companion_item_udid(item)
+            info = await _fetch_companion_device(companion, dev_udid)
+            if not info:
                 continue
-            if isinstance(val, dict) and key in val:
-                val = val[key]
-            print(f"WATCH_{key} {val}", flush=True)
-            if key == "DeviceName":
-                name = val
-            elif key == "ProductType":
-                product = val
-            elif key == "BatteryCurrentCapacity":
-                level = int(val) if val is not None else None
-            elif key == "BatteryIsCharging":
-                is_charging = bool(val)
+            if info.get("battery_level") is None:
+                print(f"COMPANION_SKIP {dev_udid[:8]} no battery", flush=True)
+                continue
+            if _is_watch_device(info) and watch is None:
+                watch = info
+                print(
+                    f"WATCH_OK {info['battery_level']}% {info['battery_state']}",
+                    flush=True,
+                )
+            else:
+                accessories.append(info)
+                print(
+                    f"ACCESSORY_OK {info.get('name')} {info['battery_level']}%",
+                    flush=True,
+                )
 
-        if level is None:
-            raise RuntimeError("Watch battery level missing")
-
-        return {
-            "udid": watch_udid,
-            "name": name,
-            "product_type": product,
-            "battery_level": level,
-            "battery_state": "charging" if is_charging else "Not Charging",
-        }
+        result["watch"] = watch
+        result["accessories"] = accessories
+        if not watch and not accessories:
+            result["error"] = "companion devices found but none report battery"
+        return result
     finally:
         await stack.aclose()
         tunnel_service.USE_USERSPACE_TUNNEL = False
+
+
+async def _watch_via_remotepairing(
+    host: str | None = None, udid: str | None = None
+) -> dict[str, Any]:
+    """Backward-compatible: return Watch dict or raise."""
+    comp = await _companion_via_remotepairing(host=host, udid=udid)
+    if comp.get("watch"):
+        return comp["watch"]
+    if comp.get("error"):
+        raise RuntimeError(comp["error"])
+    raise RuntimeError("no paired watches in companion registry")
 
 
 async def fetch_hub(dev: dict[str, Any], prev_entry: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -244,18 +304,31 @@ async def fetch_hub(dev: dict[str, Any], prev_entry: dict[str, Any] | None = Non
         print(f"PHONE_FAIL {type(e).__name__}: {e}", flush=True)
 
     try:
-        entry["watch"] = await _watch_via_remotepairing(host=host, udid=udid)
-        print(
-            f"WATCH_OK {entry['watch']['battery_level']}% {entry['watch']['battery_state']}",
-            flush=True,
-        )
+        comp = await _companion_via_remotepairing(host=host, udid=udid)
+        if comp.get("watch"):
+            entry["watch"] = comp["watch"]
+        if comp.get("accessories"):
+            entry["accessories"] = comp["accessories"]
+        if comp.get("error") and not comp.get("watch") and not comp.get("accessories"):
+            errors.append(f"accessories: {comp['error']}")
+            print(f"COMPANION_FAIL {comp['error']}", flush=True)
+        elif comp.get("error"):
+            # Hub reachable; accessories partial — keep data, soft note only
+            print(f"COMPANION_NOTE {comp['error']}", flush=True)
     except Exception as e:
-        errors.append(f"watch: {type(e).__name__}: {e}")
-        print(f"WATCH_FAIL {type(e).__name__}: {e}", flush=True)
+        errors.append(f"accessories: {type(e).__name__}: {e}")
+        print(f"COMPANION_FAIL {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
 
+    # Hub reachability drives card status; accessory issues are non-fatal
     if errors:
-        entry["error"] = "; ".join(errors)
+        hub_failed = not (entry.get("hub") and entry["hub"].get("battery_level") is not None)
+        if hub_failed:
+            entry["error"] = "; ".join(errors)
+        else:
+            entry["accessory_note"] = "; ".join(
+                e for e in errors if e.startswith("accessories:")
+            ) or None
     return entry
 
 

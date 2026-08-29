@@ -21,6 +21,7 @@
   let state = { store: { devices: [], poll_seconds: 120 }, battery: {}, job: {} };
   let wiz = { step: 1, host: "", device: null, verify: null, pollTimer: null };
   let checking = new Set();
+  let discovering = new Set();
 
   /** Human model label from Apple ProductType when possible */
   function modelLabel(productType, fallbackName) {
@@ -41,36 +42,34 @@
     return fallbackName || "iDevice";
   }
 
-  function statusBadge(entry, batt) {
-    // Prefer per-device entry from battery.devices[]
-    const err = (entry && entry.error) || (batt && batt.error);
-    const hasHub = entry && entry.hub && entry.hub.battery_level != null;
-    const hasPhone = batt && batt.phone && batt.phone.battery_level != null;
+  function statusBadge(entry, hub) {
+    const hasHub = hub && hub.battery_level != null;
+    const err = entry && entry.error;
+    if (hasHub) {
+      return {
+        cls: "ok",
+        text: "Online",
+        title: "This device was reached on the last check.",
+      };
+    }
     if (err && (String(err).includes("Timeout") || String(err).includes("Bonjour") || String(err).includes("RemotePairing"))) {
       return {
         cls: "sleep",
         text: "Asleep / offline",
-        title: "Device is unreachable over Wi‑Fi. Unlock it and keep Wi‑Fi on, then tap Check now.",
+        title: "Unlock the device and keep Wi‑Fi on, then tap Check now.",
       };
     }
     if (err) {
       return {
-        cls: "err",
-        text: "Check failed",
+        cls: "sleep",
+        text: "Unreachable",
         title: String(err),
-      };
-    }
-    if (hasHub || hasPhone) {
-      return {
-        cls: "ok",
-        text: "Online",
-        title: "Last poll reached the device successfully.",
       };
     }
     return {
       cls: "sleep",
       text: "No data yet",
-      title: "Waiting for the first successful poll.",
+      title: "Waiting for the first successful check.",
     };
   }
 
@@ -117,16 +116,22 @@
         (entry && entry.hub) ||
         (isPrimary ? batt.phone : null);
       const watchFallback = isPrimary ? batt.watch : null;
-      const b = statusBadge(entry || (isPrimary ? { error: batt.error, hub } : null), batt);
+      const b = statusBadge(entry, hub);
       const model = modelLabel(
         (hub && hub.product_type) || d.product_type,
         d.name
       );
       const titleName = (hub && hub.name) || d.name || model;
       const accessories = accessoryRows(entry, watchFallback);
+      const discoverBusy = discovering.has(d.udid);
       const accHtml =
         accessories.length === 0
-          ? `<div class="tree-item muted">No accessories reported</div>`
+          ? `<div class="tree-item muted tree-empty">
+              <span class="tree-name">No accessories reported</span>
+              <button class="btn btn-sm" data-discover="${escapeHtml(d.udid)}" type="button" ${discoverBusy ? "disabled" : ""}>
+                ${discoverBusy ? "Discovering…" : "Discover"}
+              </button>
+            </div>`
           : accessories
               .map(
                 (a) => `
@@ -137,6 +142,10 @@
             </div>`
               )
               .join("");
+      const accNote =
+        entry && entry.accessory_note
+          ? `<p class="acc-note">${escapeHtml(String(entry.accessory_note).replace(/^accessories:\s*/i, ""))}</p>`
+          : "";
 
       const hubBatt =
         hub && hub.battery_level != null
@@ -160,6 +169,7 @@
         <div class="tree">
           <div class="tree-section">Accessories</div>
           ${accHtml}
+          ${accNote}
           <div class="tree-item meta-row">
             <span class="tree-name">Last check</span>
             <strong class="tree-val">${fmtTs(batt.ts)}</strong>
@@ -194,6 +204,26 @@
           alert(e.message || String(e));
         } finally {
           checking.delete(udid);
+          await refresh();
+        }
+      });
+    });
+
+    list.querySelectorAll("[data-discover]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const udid = btn.dataset.discover;
+        discovering.add(udid);
+        renderList();
+        try {
+          await api(`/devices/${encodeURIComponent(udid)}/discover`, {
+            method: "POST",
+            body: "{}",
+          });
+          await refresh();
+        } catch (e) {
+          alert(e.message || String(e));
+        } finally {
+          discovering.delete(udid);
           await refresh();
         }
       });

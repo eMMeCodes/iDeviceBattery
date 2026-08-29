@@ -283,6 +283,7 @@ def verify_device(udid: str, host: str) -> dict[str, Any]:
             "watch": None,
             "accessories": [],
             "error": None,
+            "accessory_note": None,
         }
         errors: list[str] = []
         try:
@@ -291,11 +292,22 @@ def verify_device(udid: str, host: str) -> dict[str, Any]:
         except Exception as e:
             errors.append(f"hub: {e}")
         try:
-            result["watch"] = await rb._watch_via_remotepairing(host=host, udid=udid)
+            comp = await rb._companion_via_remotepairing(host=host, udid=udid)
+            result["watch"] = comp.get("watch")
+            result["accessories"] = comp.get("accessories") or []
+            if comp.get("error") and not result["watch"] and not result["accessories"]:
+                errors.append(f"accessories: {comp['error']}")
         except Exception as e:
-            errors.append(f"watch: {e}")
+            errors.append(f"accessories: {e}")
+
+        hub_ok = result.get("hub") and result["hub"].get("battery_level") is not None
         if errors:
-            result["error"] = "; ".join(errors)
+            if not hub_ok:
+                result["error"] = "; ".join(errors)
+            else:
+                result["accessory_note"] = "; ".join(
+                    e for e in errors if e.startswith("accessories:")
+                ) or None
         return result
 
     return asyncio.run(_run())

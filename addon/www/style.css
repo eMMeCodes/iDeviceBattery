@@ -151,6 +151,21 @@ h1 { margin: 0 0 4px; font-size: 1.4rem; }
   border-color: rgba(229,115,115,0.45);
   color: var(--err);
 }
+.btn-sm {
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+.tree-empty {
+  justify-content: space-between;
+  align-items: center;
+}
+.acc-note {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
 .empty {
   text-align: center;
   padding: 48px 16px;
