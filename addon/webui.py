@@ -9,7 +9,7 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from devices_store import load_store, remove_device
 from pair_service import (
@@ -25,6 +25,86 @@ BATTERY_JSON = Path(os.environ.get("IDEVICE_BATTERY_JSON", "/share/idevice_batte
 HOST = os.environ.get("IDEVICE_UI_HOST", "0.0.0.0")
 PORT = int(os.environ.get("IDEVICE_UI_PORT", "8099"))
 
+
+def _force_check(udid: str) -> dict[str, Any]:
+    """Run one poll for a paired device and merge into battery JSON."""
+    from datetime import datetime, timezone
+
+    store = load_store()
+    dev = next((d for d in store.get("devices") or [] if d.get("udid") == udid), None)
+    if not dev:
+        raise RuntimeError("device not found")
+    result = verify_device(dev["udid"], dev["host"])
+
+    prev: dict[str, Any] = {}
+    try:
+        if BATTERY_JSON.exists():
+            prev = json.loads(BATTERY_JSON.read_text())
+    except Exception:
+        prev = {}
+
+    prev_entry = next(
+        (e for e in (prev.get("devices") or []) if e.get("udid") == udid),
+        {},
+    )
+    hub = result.get("hub") or prev_entry.get("hub")
+    watch = result.get("watch") or prev_entry.get("watch")
+    entry = {
+        "udid": dev["udid"],
+        "host": dev["host"],
+        "name": (hub or {}).get("name") or dev.get("name"),
+        "product_type": (hub or {}).get("product_type") or dev.get("product_type"),
+        "hub": hub,
+        "watch": watch,
+        "accessories": result.get("accessories") or prev_entry.get("accessories") or [],
+        "error": result.get("error"),
+    }
+
+    ordered = []
+    for d in store.get("devices") or []:
+        if d.get("udid") == udid:
+            ordered.append(entry)
+        else:
+            old = next(
+                (e for e in (prev.get("devices") or []) if e.get("udid") == d.get("udid")),
+                None,
+            )
+            ordered.append(
+                old
+                or {
+                    "udid": d["udid"],
+                    "host": d["host"],
+                    "name": d.get("name"),
+                    "product_type": d.get("product_type"),
+                    "hub": None,
+                    "watch": None,
+                    "accessories": [],
+                    "error": None,
+                }
+            )
+
+    doc = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "path": "remotepairing-userspace-rsd",
+        "devices": ordered,
+        "phone_udid": ordered[0]["udid"] if ordered else udid,
+        "phone": ordered[0].get("hub") if ordered else hub,
+        "watch": ordered[0].get("watch") if ordered else watch,
+        "error": result.get("error"),
+    }
+    prim = (store.get("devices") or [{}])[0]
+    if prim.get("udid") == udid:
+        doc["phone_udid"] = udid
+        if hub:
+            doc["phone"] = hub
+        if watch:
+            doc["watch"] = watch
+
+    BATTERY_JSON.parent.mkdir(parents=True, exist_ok=True)
+    tmp = BATTERY_JSON.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc, indent=2, default=str))
+    tmp.replace(BATTERY_JSON)
+    return {"result": result, "battery": doc}
 
 def _read_battery() -> dict[str, Any]:
     try:
@@ -145,6 +225,10 @@ class Handler(BaseHTTPRequestHandler):
                 udid = str(body.get("udid") or "")
                 host = str(body.get("host") or "")
                 self._json(200, verify_device(udid, host))
+                return
+            if api.startswith("/api/devices/") and api.endswith("/check"):
+                udid = api[len("/api/devices/") : -len("/check")]
+                self._json(200, _force_check(udid))
                 return
             if api.startswith("/api/devices/") and api.endswith("/remove"):
                 # POST /api/devices/<udid>/remove
