@@ -1,0 +1,23 @@
+name: iDevice Battery
+version: "0.5.2"
+slug: idevice_pair
+description: "iPhone + Apple Watch battery over Wi-Fi via RemotePairing RSD (pymobiledevice3)."
+arch:
+  - aarch64
+usb: true
+udev: true
+host_network: true
+init: false
+startup: application
+boot: auto
+apparmor: false
+map:
+  - share:rw
+options:
+  phone_udid: ""
+  phone_host: ""
+  poll_seconds: 120
+schema:
+  phone_udid: str
+  phone_host: str
+  poll_seconds: int(30,600)

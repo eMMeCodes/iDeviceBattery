@@ -1,0 +1,46 @@
+# Example Bubble Card (custom:bubble-card)
+# Adjust entity_ids to match your package (defaults below = generic example names).
+#
+# Secondary line = last update from attribute `ts` on the phone battery sensor.
+
+type: custom:bubble-card
+card_type: button
+button_type: state
+entity: sensor.idevice_phone_battery
+name: iPhone + Watch
+icon: mdi:cellphone
+card_layout: large-sub-buttons-grid
+rows: "1"
+show_state: true
+show_name: true
+styles: |
+  ${(() => {
+    const el = card.querySelector('.bubble-state');
+    if (!el) return;
+    const ts = hass.states['sensor.idevice_phone_battery']?.attributes?.ts;
+    if (!ts) { el.innerText = '—'; return; }
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) { el.innerText = '—'; return; }
+    el.innerText = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  })()}
+sub_button:
+  - entity: sensor.idevice_phone_battery
+    icon: mdi:cellphone
+    show_state: true
+    show_icon: true
+    show_background: true
+  - entity: sensor.idevice_phone_battery_state
+    icon: mdi:battery-charging
+    show_state: true
+    show_icon: true
+    show_background: true
+  - entity: sensor.idevice_watch_battery
+    icon: mdi:watch
+    show_state: true
+    show_icon: true
+    show_background: true
+  - entity: sensor.idevice_watch_battery_state
+    icon: mdi:battery-heart
+    show_state: true
+    show_icon: true
+    show_background: true

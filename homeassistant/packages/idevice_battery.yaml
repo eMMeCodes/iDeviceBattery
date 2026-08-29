@@ -1,0 +1,75 @@
+# command_line sensors for /share/idevice_battery.json (add-on iDevice Battery)
+# Include from configuration.yaml packages, e.g.:
+#   idevice_battery: !include packages/idevice_battery.yaml
+#
+# Rename sensors/unique_id as needed. Entity ids follow the name field.
+
+command_line:
+  - sensor:
+      name: "iDevice phone battery"
+      unique_id: idevice_phone_battery
+      command: 'cat /share/idevice_battery.json 2>/dev/null || echo {}'
+      scan_interval: 60
+      value_template: >-
+        {% set p = value_json.phone if value_json is mapping else none %}
+        {% if p is mapping and p.battery_level is defined %}
+          {{ p.battery_level }}
+        {% else %}
+          unknown
+        {% endif %}
+      unit_of_measurement: "%"
+      device_class: battery
+      state_class: measurement
+      json_attributes:
+        - phone
+        - watch
+        - ts
+        - error
+        - path
+
+  - sensor:
+      name: "iDevice watch battery"
+      unique_id: idevice_watch_battery
+      command: 'cat /share/idevice_battery.json 2>/dev/null || echo {}'
+      scan_interval: 60
+      value_template: >-
+        {% set w = value_json.watch if value_json is mapping else none %}
+        {% if w is mapping and w.battery_level is defined %}
+          {{ w.battery_level }}
+        {% else %}
+          unknown
+        {% endif %}
+      unit_of_measurement: "%"
+      device_class: battery
+      state_class: measurement
+      json_attributes:
+        - watch
+        - ts
+        - error
+        - path
+
+  - sensor:
+      name: "iDevice phone battery state"
+      unique_id: idevice_phone_battery_state
+      command: 'cat /share/idevice_battery.json 2>/dev/null || echo {}'
+      scan_interval: 60
+      value_template: >-
+        {% set p = value_json.phone if value_json is mapping else none %}
+        {% if p is mapping and p.battery_state is defined %}
+          {{ p.battery_state }}
+        {% else %}
+          unknown
+        {% endif %}
+
+  - sensor:
+      name: "iDevice watch battery state"
+      unique_id: idevice_watch_battery_state
+      command: 'cat /share/idevice_battery.json 2>/dev/null || echo {}'
+      scan_interval: 60
+      value_template: >-
+        {% set w = value_json.watch if value_json is mapping else none %}
+        {% if w is mapping and w.battery_state is defined %}
+          {{ w.battery_state }}
+        {% else %}
+          unknown
+        {% endif %}
