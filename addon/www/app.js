@@ -138,27 +138,28 @@
               )
               .join("");
 
+      const hubBatt =
+        hub && hub.battery_level != null
+          ? `${hub.battery_level}% · ${hub.battery_state || "—"}`
+          : "—";
       const busy = checking.has(d.udid);
       const card = document.createElement("article");
       card.className = "card";
       card.innerHTML = `
         <div class="card-head">
-          <div>
+          <div class="head-left">
             <h3>${escapeHtml(titleName)}</h3>
             <div class="meta">${escapeHtml(model)}${d.host ? " · " + escapeHtml(d.host) : ""}</div>
           </div>
-          <span class="badge ${b.cls}" title="${escapeHtml(b.title)}">${escapeHtml(b.text)}</span>
+          <div class="head-right">
+            <span class="badge ${b.cls}" title="${escapeHtml(b.title)}">${escapeHtml(b.text)}</span>
+            <div class="head-batt" title="Device battery">${escapeHtml(hubBatt)}</div>
+          </div>
         </div>
 
         <div class="tree">
-          <div class="tree-device">
-            <div class="tree-item main">
-              <span class="tree-name">Battery</span>
-              <strong class="tree-val">${hub && hub.battery_level != null ? escapeHtml(hub.battery_level + "% · " + (hub.battery_state || "—")) : "—"}</strong>
-            </div>
-            <div class="tree-section">Accessories</div>
-            ${accHtml}
-          </div>
+          <div class="tree-section">Accessories</div>
+          ${accHtml}
           <div class="tree-item meta-row">
             <span class="tree-name">Last check</span>
             <strong class="tree-val">${fmtTs(batt.ts)}</strong>
@@ -403,6 +404,18 @@
     el.addEventListener("click", openWizard)
   );
   $("wizClose").addEventListener("click", closeWizard);
+
+  const ADDON_INFO = "/config/app/local_idevice_pair/info";
+  $("btnBack").addEventListener("click", (ev) => {
+    ev.preventDefault();
+    try {
+      if (window.top && window.top !== window) {
+        window.top.location.href = ADDON_INFO;
+        return;
+      }
+    } catch (_) { /* cross-origin */ }
+    window.location.href = ADDON_INFO;
+  });
 
   refresh();
   setInterval(refresh, 15000);

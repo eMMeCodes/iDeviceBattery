@@ -26,8 +26,53 @@ body {
   gap: 16px;
   margin-bottom: 20px;
 }
+.top-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+.back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 1.15rem;
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.back:hover { border-color: var(--accent); color: var(--accent); }
 h1 { margin: 0 0 4px; font-size: 1.4rem; }
 .sub { margin: 0; color: var(--muted); font-size: 0.9rem; }
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+.head-left { min-width: 0; }
+.head-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex: 0 0 auto;
+  text-align: right;
+}
+.head-batt {
+  font-weight: 700;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+.card h3 { margin: 0 0 4px; }
+.meta { color: var(--muted); font-size: 0.85rem; margin-bottom: 0; }
 .btn {
   border: 1px solid var(--line);
   background: var(--card);
@@ -48,14 +93,7 @@ h1 { margin: 0 0 4px; font-size: 1.4rem; }
   padding: 16px;
 }
 .card h3 { margin: 0 0 4px; }
-.card-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  align-items: flex-start;
-  margin-bottom: 12px;
-}
-.meta { color: var(--muted); font-size: 0.85rem; margin-bottom: 10px; }
+.meta { color: var(--muted); font-size: 0.85rem; }
 .tree { display: grid; gap: 4px; }
 .tree-section {
   margin-top: 8px;
