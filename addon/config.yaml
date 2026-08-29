@@ -1,7 +1,7 @@
 name: iDevice Battery
-version: "0.5.3"
+version: "0.6.1"
 slug: idevice_pair
-description: "iPhone + Apple Watch battery over Wi-Fi via RemotePairing RSD (pymobiledevice3)."
+description: "Pair iDevices over USB, then track hub + Watch battery over Wi-Fi (RemotePairing RSD)."
 arch:
   - aarch64
 usb: true
@@ -11,13 +11,21 @@ init: false
 startup: application
 boot: auto
 apparmor: false
+ingress: true
+ingress_port: 8109
+panel_icon: mdi:battery-charging-wireless
+panel_title: iDevice Battery
+ingress_stream: false
+panel_admin: false
+homeassistant_api: false
+hassio_api: false
 map:
   - share:rw
 options:
-  phone_udid: ""
-  phone_host: ""
   poll_seconds: 120
+  phone_udid: "00008120-001A29390CD1A01E"
+  phone_host: "192.168.1.35"
 schema:
+  poll_seconds: int(30,600)
   phone_udid: str
   phone_host: str
-  poll_seconds: int(30,600)

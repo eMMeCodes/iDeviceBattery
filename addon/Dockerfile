@@ -26,7 +26,8 @@ RUN apt-get update \
 
 RUN pip3 install --no-cache-dir --break-system-packages 'pymobiledevice3>=11.2.0'
 
-COPY run.sh rsd_battery.py /
-RUN chmod a+x /run.sh /rsd_battery.py
+COPY devices_store.py pair_service.py webui.py rsd_battery.py run.sh /
+COPY www /www
+RUN chmod a+x /run.sh /webui.py /rsd_battery.py /pair_service.py /devices_store.py
 
 CMD ["/run.sh"]
