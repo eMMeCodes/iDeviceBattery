@@ -1,13 +1,24 @@
-#!/usr/bin/env bashio
-# shellcheck shell=bash
+#!/bin/bash
 set -euo pipefail
 
-UDID="$(bashio::config 'phone_udid')"
-HOST="$(bashio::config 'phone_host')"
-POLL="$(bashio::config 'poll_seconds')"
+OPTS=/data/options.json
+if [ -f "$OPTS" ]; then
+  UDID="$(python3 -c "import json;print(json.load(open('$OPTS')).get('phone_udid') or '')")"
+  HOST="$(python3 -c "import json;print(json.load(open('$OPTS')).get('phone_host') or '')")"
+  POLL="$(python3 -c "import json;print(json.load(open('$OPTS')).get('poll_seconds') or 120)")"
+else
+  UDID=""
+  HOST=""
+  POLL=120
+fi
+
+# Env overrides (useful for debug)
+UDID="${IDEVICE_UDID:-$UDID}"
+HOST="${IDEVICE_HOST:-$HOST}"
+POLL="${IDEVICE_POLL_SEC:-$POLL}"
 
 if [ -z "$UDID" ] || [ -z "$HOST" ]; then
-  bashio::log.fatal "Configure phone_udid and phone_host in the add-on options"
+  echo "FATAL: set phone_udid and phone_host in add-on options" >&2
   exit 1
 fi
 
@@ -19,7 +30,7 @@ export IDEVICE_BATTERY_JSON=/share/idevice_battery.json
 export IDEVICE_CDTUNNEL_MTU="${IDEVICE_CDTUNNEL_MTU:-16000}"
 export HOME=/data
 
-bashio::log.info "iDevice battery service starting (udid=${UDID} host=${HOST} poll=${POLL}s)"
+echo "=== iDevice battery service $(date -Iseconds) udid=${UDID} host=${HOST} poll=${POLL}s ==="
 
 mkdir -p /data/lockdown /data/.pymobiledevice3 /var/lib /run/avahi-daemon /run/dbus /var/run /share
 ln -sfn /data/lockdown /var/lib/lockdown
@@ -31,7 +42,7 @@ avahi-daemon --daemonize --no-chroot 2>/tmp/avahi.err || true
 usbmuxd 2>/dev/null || true
 sleep 1
 
-bashio::log.info "Enable Wi-Fi lockdown (best-effort)"
+echo "=== enable wifi lockdown (best-effort) ==="
 python3 - <<PY || true
 import plistlib, socket, ssl, struct, tempfile
 from pathlib import Path
@@ -109,8 +120,8 @@ for key in ("EnableWifiConnections", "EnableWifiDebugging"):
     print(key, recv(s))
 PY
 
-bashio::log.info "One-shot poll"
+echo "=== one-shot ==="
 python3 /rsd_battery.py --once || true
 
-bashio::log.info "Entering poll loop"
+echo "=== poll loop ==="
 exec python3 /rsd_battery.py
