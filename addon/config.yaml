@@ -1,5 +1,5 @@
 name: iDevice Battery
-version: "0.6.1"
+version: "0.6.2"
 slug: idevice_pair
 description: "Pair iDevices over USB, then track hub + Watch battery over Wi-Fi (RemotePairing RSD)."
 arch:

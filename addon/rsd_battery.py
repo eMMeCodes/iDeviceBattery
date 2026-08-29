@@ -218,6 +218,23 @@ async def fetch_hub(dev: dict[str, Any], prev_entry: dict[str, Any] | None = Non
         # refresh friendly name
         entry["name"] = entry["hub"].get("name") or entry["name"]
         entry["product_type"] = entry["hub"].get("product_type") or entry["product_type"]
+        try:
+            from devices_store import load_store, save_store
+
+            store = load_store()
+            changed = False
+            for d in store.get("devices") or []:
+                if d.get("udid") == udid:
+                    if entry["name"] and d.get("name") != entry["name"]:
+                        d["name"] = entry["name"]
+                        changed = True
+                    if entry["product_type"] and d.get("product_type") != entry["product_type"]:
+                        d["product_type"] = entry["product_type"]
+                        changed = True
+            if changed:
+                save_store(store)
+        except Exception:
+            pass
         print(
             f"PHONE_OK {udid[:8]}… {entry['hub']['battery_level']}% {entry['hub']['battery_state']}",
             flush=True,

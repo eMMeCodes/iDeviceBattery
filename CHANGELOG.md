@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1 — 2026-08-30
+
+- Ingress web UI (port 8109): paired device list + values
+- **Add** wizard: unlock → USB → Trust → RemotePairing → IP → verify → save
+- Device registry in `/data/devices.json` (seeds from legacy options)
+- Poller supports registry; keeps legacy `phone`/`watch` JSON for existing sensors
+
 ## 0.5.3 — 2026-08-29
 
 - Read options from `/data/options.json` (no `hassio_api` / bashio Supervisor calls)
