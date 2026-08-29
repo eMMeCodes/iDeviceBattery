@@ -1,11 +1,15 @@
 # Changelog
 
+## 0.5.3 — 2026-08-29
+
+- Read options from `/data/options.json` (no `hassio_api` / bashio Supervisor calls)
+- Keep `build-essential` so `sslpsk-pmd3` builds on aarch64
+
 ## 0.5.2 — 2026-08-29
 
 - Remove experimental `comptest` / classic companion Wi-Fi probes from the image
-- Add-on options: `phone_udid`, `phone_host`, `poll_seconds` (via bashio)
+- Add-on options: `phone_udid`, `phone_host`, `poll_seconds`
 - Fail fast if UDID/host are empty
-- Slim Dockerfile (no libimobiledevice-dev / build-essential)
 - Documentation and git-ready packaging
 
 ## 0.5.1 — 2026-08-29

@@ -1,5 +1,5 @@
 name: iDevice Battery
-version: "0.5.2"
+version: "0.5.3"
 slug: idevice_pair
 description: "iPhone + Apple Watch battery over Wi-Fi via RemotePairing RSD (pymobiledevice3)."
 arch:
