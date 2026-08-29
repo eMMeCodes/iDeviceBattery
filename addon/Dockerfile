@@ -8,6 +8,8 @@ RUN apt-get update \
     usbmuxd \
     libimobiledevice-utils \
     libplist-dev \
+    build-essential \
+    pkg-config \
     usbutils \
     python3 \
     python3-pip \
