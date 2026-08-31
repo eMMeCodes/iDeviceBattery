@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from devices_store import load_store, primary_device
+from devices_store import load_store, primary_device, save_store
 
 OUT = Path(os.environ.get("IDEVICE_BATTERY_JSON", "/share/idevice_battery.json"))
 LOCKDOWN_DIR = Path(os.environ.get("IDEVICE_LOCKDOWN", "/var/lib/lockdown"))
@@ -207,7 +207,7 @@ async def _companion_via_remotepairing(
         listed = await companion.list()
         print(f"COMPANION_LIST {listed}", flush=True)
         if not listed:
-            result["error"] = "no accessories in companion registry"
+            result["error"] = "no accessories on the last scan"
             return result
 
         watch: dict[str, Any] | None = None
@@ -236,7 +236,7 @@ async def _companion_via_remotepairing(
         result["watch"] = watch
         result["accessories"] = accessories
         if not watch and not accessories:
-            result["error"] = "companion devices found but none report battery"
+            result["error"] = "no accessories on the last scan"
         return result
     finally:
         await stack.aclose()
@@ -252,7 +252,7 @@ async def _watch_via_remotepairing(
         return comp["watch"]
     if comp.get("error"):
         raise RuntimeError(comp["error"])
-    raise RuntimeError("no paired watches in companion registry")
+    raise RuntimeError("no accessories on the last scan")
 
 
 async def fetch_hub(dev: dict[str, Any], prev_entry: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -335,6 +335,27 @@ async def fetch_hub(dev: dict[str, Any], prev_entry: dict[str, Any] | None = Non
 async def fetch_once() -> dict[str, Any]:
     store = load_store()
     devices = store.get("devices") or []
+    # Upgrade link-local / unusable hosts to a real Bonjour Wi‑Fi address (IPv4 preferred)
+    try:
+        from pair_service import _host_rank, wifi_host_from_bonjour_async
+
+        changed = False
+        for dev in devices:
+            host = str(dev.get("host") or "")
+            rank = _host_rank(host)
+            # Already plain IPv4 — keep. Upgrade fe80 / .local / IPv6 if Bonjour has better.
+            if rank == 0:
+                continue
+            better = await wifi_host_from_bonjour_async(str(dev["udid"]))
+            if better and _host_rank(better) < rank:
+                print(f"[poll] host {host!r} → {better!r} for {dev['udid'][:8]}", flush=True)
+                dev["host"] = better
+                changed = True
+        if changed:
+            save_store(store)
+    except Exception as e:
+        print(f"[poll] wifi_host refresh skipped: {e}", flush=True)
+
     prev = _load_prev()
     prev_by = {d.get("udid"): d for d in (prev.get("devices") or []) if d.get("udid")}
 
@@ -388,12 +409,18 @@ def _write(doc: dict[str, Any]) -> None:
     tmp = OUT.with_suffix(".tmp")
     tmp.write_text(json.dumps(doc, indent=2, default=str))
     tmp.replace(OUT)
+    try:
+        from mqtt_ha import sync_battery_doc
+
+        sync_battery_doc(doc)
+    except Exception as e:
+        print(f"[mqtt] poll sync failed: {e}", flush=True)
 
 
 async def loop() -> None:
     while True:
         store = load_store()
-        poll = int(store.get("poll_seconds") or os.environ.get("IDEVICE_POLL_SEC") or 120)
+        poll = int(store.get("poll_seconds") or os.environ.get("IDEVICE_POLL_SEC") or 180)
         try:
             doc = await fetch_once()
         except Exception as e:

@@ -57,15 +57,18 @@ Pair records (persistent in add-on `/data`):
 File: `/share/idevice_battery.json` (Supervisor share, readable by Core
 `command_line` sensors).
 
-- Updated every `poll_seconds` (default 120)
-- On partial failure, previous `phone` / `watch` objects are retained
-- `error` string lists failures; `path` is always `remotepairing-userspace-rsd`
+- Updated every `poll_minutes` (default 3 → 180 s)
+- On partial failure, previous hub / accessory objects are retained
+- `error` string lists hub failures; accessory issues are a soft note
+- `path` is always `remotepairing-userspace-rsd`
+
+MQTT discovery (primary): `sensor.idevice_<udid-key>_battery` and
+`_battery_state` for each hub and each accessory that reports a level.
 
 ## Home Assistant side
 
-`command_line` sensors `cat` the JSON every 60s. Prefer putting derived UX
-(labels, formatting) in YAML sensors/templates rather than fragile card CSS,
-except small Bubble Card `styles` overrides (e.g. last-update clock).
+Prefer MQTT entities. Optional fallback: `command_line` sensors that `cat`
+`/share/idevice_battery.json` (see `homeassistant/packages/`).
 
 ## Non-goals
 

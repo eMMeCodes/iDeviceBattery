@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ingress web UI + JSON API for iDevice Battery (port 8099)."""
+"""Ingress web UI + JSON API for iDevice Battery (Ingress port 8109)."""
 from __future__ import annotations
 
 import json
@@ -20,10 +20,17 @@ from pair_service import (
     verify_device,
 )
 
-WWW = Path(os.environ.get("IDEVICE_WWW", "/www"))
+def _resolve_www() -> Path:
+    overlay = Path("/share/idevice_ui")
+    if (overlay / "app.js").is_file():
+        return overlay
+    return Path(os.environ.get("IDEVICE_WWW", "/www"))
+
+
+WWW = _resolve_www()
 BATTERY_JSON = Path(os.environ.get("IDEVICE_BATTERY_JSON", "/share/idevice_battery.json"))
-HOST = os.environ.get("IDEVICE_UI_HOST", "0.0.0.0")
-PORT = int(os.environ.get("IDEVICE_UI_PORT", "8099"))
+HOST = os.environ.get("IDEVICE_UI_HOST", "172.30.32.2")
+PORT = int(os.environ.get("IDEVICE_UI_PORT", "8109"))
 
 
 def _force_check(udid: str) -> dict[str, Any]:
@@ -109,6 +116,12 @@ def _force_check(udid: str) -> dict[str, Any]:
     tmp = BATTERY_JSON.with_suffix(".tmp")
     tmp.write_text(json.dumps(doc, indent=2, default=str))
     tmp.replace(BATTERY_JSON)
+    try:
+        from mqtt_ha import sync_entry
+
+        sync_entry(entry)
+    except Exception as e:
+        print(f"[mqtt] force_check sync failed: {e}", flush=True)
     return {"result": result, "battery": doc}
 
 
@@ -190,7 +203,35 @@ def _force_discover(udid: str) -> dict[str, Any]:
     tmp = BATTERY_JSON.with_suffix(".tmp")
     tmp.write_text(json.dumps(doc, indent=2, default=str))
     tmp.replace(BATTERY_JSON)
+    try:
+        from mqtt_ha import sync_entry
+
+        sync_entry(entry)
+    except Exception as e:
+        print(f"[mqtt] force_discover sync failed: {e}", flush=True)
     return {"companion": comp, "battery": doc}
+
+
+def _remove_paired_device(udid: str) -> dict[str, Any]:
+    """Remove from registry and clear MQTT discovery for hub + known accessories."""
+    prev_entry = None
+    try:
+        batt = _read_battery()
+        prev_entry = next(
+            (e for e in (batt.get("devices") or []) if e.get("udid") == udid),
+            None,
+        )
+    except Exception:
+        prev_entry = None
+    store = remove_device(udid)
+    try:
+        from mqtt_ha import unpublish_entry
+
+        unpublish_entry(prev_entry, udid)
+    except Exception as e:
+        print(f"[mqtt] unpublish failed: {e}", flush=True)
+    return store
+
 
 def _read_battery() -> dict[str, Any]:
     try:
@@ -297,8 +338,35 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json()
         try:
             if api == "/api/pair/start":
-                job = start_pair_async(body.get("udid"))
+                job = start_pair_async(
+                    body.get("udid"),
+                    force=bool(body.get("force")),
+                )
                 self._json(200, job)
+                return
+            if api == "/api/resolve-entities":
+                from mqtt_ha import _lookup_from_entity_registry, udid_key
+
+                rows_in = body.get("rows") or []
+                out = []
+                for row in rows_in:
+                    r = dict(row)
+                    udid = r.get("udid") or ""
+                    ids = _lookup_from_entity_registry(udid) if udid else {}
+                    if ids.get("battery"):
+                        r["battery"] = ids["battery"]
+                    if ids.get("battery_state"):
+                        r["battery_state"] = ids["battery_state"]
+                    # Also try unique_id keys if provided
+                    if not r.get("battery") and r.get("unique_id_battery"):
+                        # registry scan by unique_id already covered via udid_key
+                        pass
+                    if udid and not r.get("unique_id_battery"):
+                        k = udid_key(udid)
+                        r["unique_id_battery"] = f"idevice_{k}_battery"
+                        r["unique_id_battery_state"] = f"idevice_{k}_battery_state"
+                    out.append(r)
+                self._json(200, {"rows": out})
                 return
             if api == "/api/pair/finish":
                 result = finish_pair(
@@ -312,6 +380,19 @@ class Handler(BaseHTTPRequestHandler):
                 host = str(body.get("host") or "")
                 self._json(200, verify_device(udid, host))
                 return
+            if api == "/api/pair/wifi-host":
+                from pair_service import discover_wifi_host, _enable_wifi_connections
+
+                udid = str(body.get("udid") or "")
+                if not udid:
+                    raise RuntimeError("udid required")
+                try:
+                    _enable_wifi_connections(udid)
+                except Exception:
+                    pass
+                host = discover_wifi_host(udid)
+                self._json(200, {"host": host, "udid": udid})
+                return
             if api.startswith("/api/devices/") and api.endswith("/discover"):
                 udid = api[len("/api/devices/") : -len("/discover")]
                 self._json(200, _force_discover(udid))
@@ -323,7 +404,7 @@ class Handler(BaseHTTPRequestHandler):
             if api.startswith("/api/devices/") and api.endswith("/remove"):
                 # POST /api/devices/<udid>/remove
                 udid = api[len("/api/devices/") : -len("/remove")]
-                self._json(200, remove_device(udid))
+                self._json(200, _remove_paired_device(udid))
                 return
             self._json(404, {"error": "not_found"})
         except Exception as e:
@@ -339,7 +420,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if api.startswith("/api/devices/"):
                 udid = api[len("/api/devices/") :]
-                self._json(200, remove_device(udid))
+                self._json(200, _remove_paired_device(udid))
                 return
             self._json(404, {"error": "not_found"})
         except Exception as e:
@@ -349,7 +430,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     WWW.mkdir(parents=True, exist_ok=True)
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"[ui] listening on http://{HOST}:{PORT} www={WWW}", flush=True)
+    print(f"[ui] listening on http://{HOST}:{PORT} www={WWW} (overlay={WWW == Path('/share/idevice_ui')})", flush=True)
     httpd.serve_forever()
 
 

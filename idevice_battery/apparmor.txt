@@ -1,0 +1,51 @@
+#include <tunables/global>
+
+profile idevice_battery flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/dbus-strict>
+
+  network,
+  dbus,
+
+  capability net_bind_service,
+  capability sys_admin,
+  capability dac_override,
+  capability setgid,
+  capability setuid,
+
+  /bin/** ix,
+  /sbin/** ix,
+  /usr/bin/** ix,
+  /usr/sbin/** ix,
+  /usr/local/bin/** ix,
+
+  /usr/lib/** mr,
+  /usr/libexec/** mr,
+  /lib/** mr,
+  /lib64/** mr,
+
+  /usr/bin/python3* ix,
+  /usr/lib/python3*/** mr,
+
+  /dev/bus/usb/** rw,
+  /dev/null rw,
+  /dev/urandom r,
+  /dev/random r,
+
+  /run/** rw,
+  /var/run/** rw,
+  /var/lib/lockdown/** rw,
+  /var/lib/dbus/** rw,
+  /var/lib/avahi-daemon/** rw,
+
+  /data/** rw,
+  /share/** rw,
+  /config/** r,
+  /www/** r,
+  /tmp/** rw,
+  /proc/** r,
+  /sys/** r,
+
+  signal (receive) peer=unconfined,
+}

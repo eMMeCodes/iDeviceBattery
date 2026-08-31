@@ -18,7 +18,25 @@ def _now() -> str:
 
 
 def default_store() -> dict[str, Any]:
-    return {"poll_seconds": 120, "devices": []}
+    return {"poll_seconds": 180, "devices": []}
+
+
+def _poll_seconds_from_opts(opts: dict[str, Any]) -> int | None:
+    """Configuration: poll_minutes 1–10 (legacy: poll_seconds)."""
+    if opts.get("poll_minutes") is not None:
+        try:
+            minutes = int(opts["poll_minutes"])
+            return max(1, min(10, minutes)) * 60
+        except (TypeError, ValueError):
+            return None
+    if opts.get("poll_seconds") is not None:
+        try:
+            sec = int(opts["poll_seconds"])
+            minutes = max(1, min(10, round(sec / 60) or 1))
+            return minutes * 60
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def load_store() -> dict[str, Any]:
@@ -27,7 +45,7 @@ def load_store() -> dict[str, Any]:
         try:
             raw = json.loads(DEVICES_PATH.read_text())
             if isinstance(raw, dict):
-                store["poll_seconds"] = int(raw.get("poll_seconds") or 120)
+                store["poll_seconds"] = int(raw.get("poll_seconds") or 180)
                 store["devices"] = list(raw.get("devices") or [])
         except Exception:
             pass
@@ -47,16 +65,18 @@ def load_store() -> dict[str, Any]:
                         "added_at": _now(),
                     }
                 )
-            if opts.get("poll_seconds"):
-                store["poll_seconds"] = int(opts["poll_seconds"])
+            poll = _poll_seconds_from_opts(opts)
+            if poll is not None:
+                store["poll_seconds"] = poll
             save_store(store)
         except Exception:
             pass
     elif OPTS_PATH.exists():
         try:
             opts = json.loads(OPTS_PATH.read_text())
-            if opts.get("poll_seconds"):
-                store["poll_seconds"] = int(opts["poll_seconds"])
+            poll = _poll_seconds_from_opts(opts)
+            if poll is not None:
+                store["poll_seconds"] = poll
         except Exception:
             pass
     return store

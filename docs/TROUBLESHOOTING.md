@@ -4,7 +4,7 @@
 
 1. Confirm `/share/idevice_battery.json` `ts` is recent
 2. Unlock the iPhone — sleep often drops Bonjour + `:62078`
-3. Wait one add-on poll (`poll_seconds`, default 120) plus one HA `scan_interval` (60)
+3. Wait one add-on poll (`poll_minutes`, default 3) plus one HA `scan_interval` (60)
 4. Check `error` in the JSON
 
 ## Phone battery OK, Watch missing
@@ -48,7 +48,7 @@ Those paths were evaluated and closed; use RemotePairing RSD.
 ## Logs
 
 ```bash
-ha apps logs local_idevice_pair
+ha apps logs local_idevice_battery
 cat /share/idevice_battery.json
 ```
 

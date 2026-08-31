@@ -1,18 +1,21 @@
 # Pairing guide
 
+Preferred path: add-on Ingress UI → **+ Add**. The steps below are the same
+operations the wizard runs (useful if you debug from a shell).
+
 You need **two** pairings. Both are done **once** over USB (unless you reset
-Trust or wipe the phone).
+Trust or wipe the device).
 
 ## 1. Prerequisites
 
-- iPhone unlocked, on the same network as Home Assistant
-- Prefer a **static DHCP lease** for `phone_host`
+- Device unlocked, on the same network as Home Assistant
+- Prefer a **static DHCP lease** for the hub IP
 - Developer Mode is **not** required for the RemotePairing path used here
   (verified with DeveloperModeStatus off)
 
-## 2. Find the UDID
+## 2. Find the UDID (CLI only)
 
-With the phone on USB and the add-on (or a pymobiledevice3 shell) able to see it:
+With the device on USB:
 
 ```bash
 idevice_id -l
@@ -20,7 +23,7 @@ idevice_id -l
 pymobiledevice3 usbmux list
 ```
 
-Put that value in add-on option `phone_udid`.
+The wizard stores UDID automatically. There is no `phone_udid` add-on option.
 
 ## 3. Lockdown Trust
 
@@ -36,7 +39,7 @@ Accept **Trust** on the iPhone. Record lands in:
 
 (symlink target used by the add-on: `/var/lib/lockdown` → `/data/lockdown`)
 
-## 4. RemotePairing (required for Watch over Wi-Fi)
+## 4. RemotePairing (required for accessories over Wi-Fi)
 
 ```bash
 pymobiledevice3 lockdown remotepairing --pair
@@ -61,15 +64,15 @@ On start, `run.sh` tries to set:
 - `EnableWifiConnections`
 - `EnableWifiDebugging`
 
-via lockdown on `phone_host:62078`. If the phone is asleep, this step is skipped;
-USB pairing is still enough for later Wi-Fi sessions when the phone wakes.
+via lockdown on the hub IP `:62078`. If the device is asleep, this step is skipped;
+USB pairing is still enough for later Wi-Fi sessions when it wakes.
 
 ## 6. Unplug and verify
 
-1. Start the add-on
-2. Unlock the iPhone (screen on / Wi-Fi associated)
-3. Check `/share/idevice_battery.json` for non-null `phone` and `watch`
-4. Add-on logs should show `PHONE_OK`, `REMOTEPAIRING`, `TUNNEL_OK`, `WATCH_OK`
+1. Start the add-on and finish **+ Add** in the Ingress UI
+2. Unlock the device (screen on / Wi‑Fi associated)
+3. The card should show **Online** and a battery %; expand for `entity_id`s
+4. Optional: `/share/idevice_battery.json` still has hub / accessory snapshots
 
 ## Re-pairing
 

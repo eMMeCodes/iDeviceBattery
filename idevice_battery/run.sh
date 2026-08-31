@@ -7,18 +7,89 @@ export IDEVICE_BATTERY_JSON=/share/idevice_battery.json
 export IDEVICE_CDTUNNEL_MTU="${IDEVICE_CDTUNNEL_MTU:-16000}"
 export IDEVICE_DATA=/data
 export IDEVICE_WWW=/www
+if [ -f /share/idevice_ui/app.js ]; then
+  export IDEVICE_WWW=/share/idevice_ui
+fi
 export IDEVICE_UI_PORT=8109
 export PYTHONPATH=/
 
 OPTS=/data/options.json
 if [ -f "$OPTS" ]; then
-  POLL="$(python3 -c "import json;print(json.load(open('$OPTS')).get('poll_seconds') or 120)")"
+  POLL="$(python3 - <<'PY'
+import json
+opts = json.load(open("/data/options.json"))
+if opts.get("poll_minutes") is not None:
+    m = max(1, min(10, int(opts["poll_minutes"])))
+    print(m * 60)
+elif opts.get("poll_seconds") is not None:
+    m = max(1, min(10, round(int(opts["poll_seconds"]) / 60) or 1))
+    print(m * 60)
+else:
+    print(180)
+PY
+)"
 else
-  POLL=120
+  POLL=180
 fi
 export IDEVICE_POLL_SEC="$POLL"
 
-echo "=== iDevice Battery $(date -Iseconds) poll=${POLL}s ==="
+# MQTT from Supervisor /share — no add-on Configuration overrides
+export IDEVICE_MQTT_ENABLED="${IDEVICE_MQTT_ENABLED:-1}"
+export IDEVICE_MQTT_HOST="${IDEVICE_MQTT_HOST:-}"
+export IDEVICE_MQTT_PORT="${IDEVICE_MQTT_PORT:-1883}"
+export IDEVICE_MQTT_AREA="${IDEVICE_MQTT_AREA:-iDevice}"
+if [ -z "${IDEVICE_MQTT_USER:-}" ] && [ -n "${SUPERVISOR_TOKEN:-}" ]; then
+  MQTT_JSON="$(curl -sS -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+    http://supervisor/services/mqtt 2>/dev/null || true)"
+  if [ -n "$MQTT_JSON" ]; then
+    eval "$(MQTT_JSON="$MQTT_JSON" python3 - <<'PY'
+import json, os, shlex
+try:
+    data = json.loads(os.environ["MQTT_JSON"]).get("data") or {}
+except Exception:
+    data = {}
+if not os.environ.get("IDEVICE_MQTT_HOST"):
+    print(f"export IDEVICE_MQTT_HOST={shlex.quote('127.0.0.1')}")
+if data.get("port") and not os.environ.get("IDEVICE_MQTT_PORT"):
+    print(f"export IDEVICE_MQTT_PORT={shlex.quote(str(data['port']))}")
+if data.get("username"):
+    print(f"export IDEVICE_MQTT_USER={shlex.quote(str(data['username']))}")
+if data.get("password") is not None:
+    print(f"export IDEVICE_MQTT_PASSWORD={shlex.quote(str(data['password']))}")
+print("echo '[mqtt] credentials from Supervisor services/mqtt'")
+PY
+)"
+  fi
+fi
+if [ -z "${IDEVICE_MQTT_HOST}" ]; then
+  export IDEVICE_MQTT_HOST=127.0.0.1
+  echo "[mqtt] default host 127.0.0.1"
+fi
+# Fallback credentials file (when Supervisor token / options empty)
+if [ -z "${IDEVICE_MQTT_USER:-}" ] && [ -f /share/idevice_mqtt.json ]; then
+  eval "$(python3 - <<'PY'
+import json, shlex
+data = json.load(open("/share/idevice_mqtt.json"))
+if data.get("host"):
+    print(f"export IDEVICE_MQTT_HOST={shlex.quote(str(data['host']))}")
+if data.get("port"):
+    print(f"export IDEVICE_MQTT_PORT={shlex.quote(str(data['port']))}")
+user = data.get("username") or data.get("user")
+if user:
+    print(f"export IDEVICE_MQTT_USER={shlex.quote(str(user))}")
+if data.get("password") is not None:
+    print(f"export IDEVICE_MQTT_PASSWORD={shlex.quote(str(data['password']))}")
+print("echo '[mqtt] credentials from /share/idevice_mqtt.json'")
+PY
+)"
+fi
+if [ -n "${IDEVICE_MQTT_USER:-}" ]; then
+  echo "[mqtt] user=${IDEVICE_MQTT_USER} host=${IDEVICE_MQTT_HOST}:${IDEVICE_MQTT_PORT}"
+else
+  echo "[mqtt] WARNING: no mqtt_user — enable MQTT add-on / Supervisor API (mqtt:need)"
+fi
+
+echo "=== iDevice Battery $(date -Iseconds) poll=${POLL}s ($((POLL / 60)) min) ==="
 
 mkdir -p /data/lockdown /data/.pymobiledevice3 /var/lib /run/avahi-daemon /run/dbus /var/run /share
 ln -sfn /data/lockdown /var/lib/lockdown

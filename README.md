@@ -1,113 +1,106 @@
 # iDevice Battery for Home Assistant
 
-Read **iPhone** and **Apple Watch** battery level / charging state into Home Assistant
-**without** relying on the Home Assistant Companion app for the Watch.
+Pair **iPhone / iPad** over USB once, then poll battery (hub + accessories) over
+Wi‑Fi and publish **MQTT discovery** sensors to Home Assistant.
 
-This is the Linux / HA OS equivalent of the values that
-[AirBattery](https://github.com/lihaoyun6/AirBattery) shows on macOS.
+No Home Assistant Companion app is required for Watch or other accessories.
 
 | Device | How data is obtained |
 |--------|----------------------|
-| iPhone | Wi-Fi lockdown (`:62078`) + Trust pair record → `com.apple.mobile.battery` |
-| Apple Watch | **RemotePairing** (USB once) → userspace CDTunnel → RSD → `companion_proxy` |
+| iPhone / iPad (hub) | Wi-Fi lockdown (`:62078`) + Trust pair record → `com.apple.mobile.battery` |
+| Accessories (Watch, headphones, …) | **RemotePairing** (USB once) → userspace CDTunnel → RSD → `companion_proxy` |
 
-> Classic AirBattery path (Apple **usbmuxd** + Wi-Fi `companion_proxy`) does **not**
-> work on Linux. Apple usbmuxd is not available; Debian `usbmuxd` is USB-only.
-> Production path on HA OS is **RemotePairing + RSD userspace**.
+Accessories appear only if the hub exposes them. A device with no accessories
+is a normal, valid state.
+
+> Classic AirBattery path (Apple **usbmuxd** + Wi-Fi `companion_proxy`) does
+> **not** work on Linux. Production path on HA OS is **RemotePairing + RSD**.
 
 ## Repository layout
 
 ```
-addon/                      Home Assistant local add-on (copy to /addons/idevice_pair/)
+idevice_battery/            Home Assistant app (source of truth for GitHub publish)
+repository.yaml             Add-on store metadata
+.github/workflows/          GHCR multi-arch build
 docs/                       Architecture, pairing, troubleshooting
 homeassistant/
-  packages/                 command_line sensors reading /share/idevice_battery.json
+  packages/                 optional command_line fallback (MQTT discovery is primary)
   lovelace/                 Bubble Card example
 ```
 
 ## Requirements
 
 - Home Assistant OS / Supervised (tested on HA OS 18 + Core 2026.8, aarch64)
-- iPhone on the same LAN, with **Wireless debugging / Wi-Fi sync** style lockdown
-- One-time USB connection to the HA host for Trust + RemotePairing
-- Add-on privileges: `usb`, `udev`, `host_network`, `share:rw`, AppArmor disabled
+- Mosquitto (or another MQTT broker) — add-on requests `mqtt:need`
+- Device on the same LAN as Home Assistant
+- One-time USB connection to the HA host (Trust + RemotePairing)
+- Add-on privileges: `usb`, `udev`, `host_network`, `share:rw`, custom AppArmor profile
 
 ## Quick start
 
 ### 1. Install the add-on
 
+**From GitHub (recommended after publish):** add this repository URL under
+**Settings → Add-ons → Add-on store → ⋮ → Repositories**, then install
+**iDevice Battery**.
+
+**Local development on HA OS:** copy the app folder and build locally (remove
+`image:` from `config.yaml` first):
+
 ```bash
-cp -a addon /addons/idevice_pair
-# Supervisor → Local add-ons → iDevice Battery → Install
+cp -a idevice_battery /addons/idevice_battery
+# edit /addons/idevice_battery/config.yaml — delete the image: line
 ```
 
-Set options:
+Then: **Settings → Add-ons → Add-on store → ⋮ → Check for updates → iDevice Battery → Install**.
+
+Configuration has a single option:
 
 | Option | Description |
 |--------|-------------|
-| `phone_udid` | iPhone UDID (Settings → General → About, or `idevice_id -l` over USB) |
-| `phone_host` | iPhone LAN IP (static DHCP recommended) |
-| `poll_seconds` | Poll interval (default `120`) |
+| `poll_minutes` | How often to poll (menu **1–10**, default **3**) |
 
-### 2. Pair once (USB)
+MQTT host/credentials come from Supervisor. Optional fallback file:
+`/share/idevice_mqtt.json` (`host`, `port`, `username`, `password`).
 
-Plug the iPhone into the HA machine (or a USB port visible to the add-on), Trust the computer, then inside the add-on container (or a one-shot shell with the same `/data` volume):
+### 2. Pair devices (Ingress UI)
 
-```bash
-# Lockdown Trust pair record → /data/lockdown/<UDID>.plist
-pymobiledevice3 lockdown pair
+Open the add-on **Open Web UI** (or sidebar **iDevice Battery**) and tap **+ Add**.
 
-# RemotePairing record → /data/.pymobiledevice3/remote_<UDID>.plist
-pymobiledevice3 lockdown remotepairing --pair
-```
+The wizard:
 
-Unplug USB after pairing succeeds. Daily use is Wi-Fi only.
+1. Unlock the device and plug it into the HA machine via USB
+2. Tap **Trust** on the device if asked (re-pair skips this)
+3. Detects the LAN IPv4 (Bonjour; not link-local `fe80`)
+4. Verifies battery over Wi‑Fi and shows Home Assistant `entity_id`s
+5. Saves the device — unplug USB. Daily use is Wi‑Fi only
 
-### 3. Start the add-on
+Repeat **+ Add** for each hub (phone, iPad, …).
 
-Output file:
+### 3. Home Assistant entities
 
-```text
-/share/idevice_battery.json
-```
+MQTT discovery creates, per hub and per accessory that reports battery:
 
-Example:
+- `sensor.idevice_<key>_battery`
+- `sensor.idevice_<key>_battery_state`
 
-```json
-{
-  "ts": "2026-08-29T20:50:44.035444+00:00",
-  "phone": {
-    "battery_level": 81,
-    "battery_state": "charging",
-    "name": "Mal9000",
-    "product_type": "iPhone15,4"
-  },
-  "watch": {
-    "udid": "00008310-…",
-    "battery_level": 88,
-    "battery_state": "Not Charging"
-  },
-  "path": "remotepairing-userspace-rsd",
-  "error": null
-}
-```
+`<key>` is a stable short id from the device UDID. Expand a card in the UI to
+copy the real `entity_id`.
 
-### 4. Home Assistant sensors
+A JSON snapshot is still written to `/share/idevice_battery.json` (optional
+`command_line` package in `homeassistant/packages/` if you do not want MQTT).
 
-Copy `homeassistant/packages/idevice_battery.yaml` into your config packages
-(or merge the `command_line:` block), then check config and reload/restart.
+### 4. Dashboard (optional)
 
-### 5. Dashboard (optional)
+See `homeassistant/lovelace/bubble_card_example.yaml`. Prefer the MQTT
+`sensor.idevice_*` entities over the old `command_line` sensors.
 
-See `homeassistant/lovelace/bubble_card_example.yaml` for a Bubble Card with
-phone/watch chips and last-update on the secondary line.
-
-## Charging state semantics
+## Charging state
 
 Apple may report `BatteryIsCharging: false` while the cable is connected
 (`ExternalConnected: true`) during **Optimized Battery Charging** (~80% hold).
 
-This add-on maps phone state as:
+Hub mapping:
 
 | Condition | `battery_state` |
 |-----------|-----------------|
@@ -115,22 +108,37 @@ This add-on maps phone state as:
 | `BatteryIsCharging` **or** `ExternalConnected` | `charging` |
 | otherwise | `Not Charging` |
 
-Watch state still uses companion `BatteryIsCharging` only.
+Accessories use companion `BatteryIsCharging` only.
+
+UI battery bar: **≤20% red**, **≤30% orange**, **>30% green**. Charging is
+always green, with a plug icon next to the percentage.
 
 ## Sleep / reachability
 
-When the iPhone sleeps, Bonjour RemotePairing and lockdown `:62078` often disappear.
-The poll fails; the writer **retains the last good phone/watch objects** and sets `error`.
-Unlock the phone (Wi-Fi on) and wait up to one poll cycle (~`poll_seconds`).
+When the hub sleeps, Bonjour RemotePairing and lockdown `:62078` often
+disappear. The poll fails; last known values are kept. Unlock the device
+(Wi‑Fi on) and tap **↻**, or wait one poll cycle.
+
+Accessory scans can skip a round while the hub is locked; last known accessory
+values stay on screen.
+
+## Publishing on GitHub
+
+Push to `main` → GitHub Actions builds `ghcr.io/emmecodes/idevice-battery` for
+`aarch64` and `amd64`. Users add your `repository.yaml` URL in the add-on store.
+
+The placeholder `icon.png` / `logo.png` should be replaced with proper artwork
+before going public.
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — why this path, what was ruled out
-- [Pairing](docs/PAIRING.md) — Trust + RemotePairing details
+- [Architecture](docs/ARCHITECTURE.md)
+- [Pairing](docs/PAIRING.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
 
-`pymobiledevice3` and Apple protocols are third-party; this project only orchestrates them for HA.
+`pymobiledevice3` and Apple protocols are third-party; this project only
+orchestrates them for Home Assistant.

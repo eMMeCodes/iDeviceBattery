@@ -1,0 +1,34 @@
+name: iDevice Battery
+version: "0.9.1"
+slug: idevice_battery
+description: "Pair iDevices over USB, then track hub + accessory battery over Wi-Fi (RemotePairing RSD). Publishes MQTT discovery to Home Assistant."
+url: "https://github.com/eMMeCodes/iDeviceBattery/tree/main/idevice_battery"
+arch:
+  - aarch64
+  - amd64
+usb: true
+udev: true
+host_network: true
+init: false
+startup: application
+boot: auto
+stage: experimental
+watchdog: http://172.30.32.2:8109/api/status
+ingress: true
+ingress_port: 8109
+panel_icon: mdi:battery-charging-wireless
+panel_title: iDevice Battery
+ingress_stream: false
+panel_admin: false
+homeassistant_api: true
+hassio_api: true
+services:
+  - mqtt:need
+map:
+  - share:rw
+  - config:ro
+options:
+  poll_minutes: 3
+schema:
+  poll_minutes: list(1|2|3|4|5|6|7|8|9|10)
+image: ghcr.io/emmecodes/idevice-battery

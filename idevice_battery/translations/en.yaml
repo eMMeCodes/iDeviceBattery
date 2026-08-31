@@ -1,0 +1,4 @@
+configuration:
+  poll_minutes:
+    name: Poll interval (minutes)
+    description: How often paired devices are checked over Wi-Fi (1–10 minutes).

@@ -4,26 +4,26 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>iDevice Battery</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=0.9.0" />
 </head>
 <body>
   <header class="top">
     <div class="top-left">
-      <a id="btnBack" class="back" href="/config/app/local_idevice_pair/info" title="Back to add-on">
+      <a id="btnBack" class="back" href="/config/app/local_idevice_battery/info" title="Back to add-on settings">
         <span aria-hidden="true">←</span>
       </a>
       <div>
         <h1>iDevice Battery</h1>
-        <p class="sub">Paired devices and battery values for Home Assistant</p>
+        <p class="sub">Devices · expand for details</p>
       </div>
     </div>
-    <button id="btnAdd" class="btn primary" type="button">+ Add</button>
+    <button id="btnAdd" class="btn primary" type="button" title="Pair a new iPhone or iPad">+ Add</button>
   </header>
 
   <main>
     <section id="listEmpty" class="empty hidden">
       <p>No devices paired yet.</p>
-      <button class="btn primary" type="button" data-open-add>Add device</button>
+      <button class="btn primary" type="button" data-open-add title="Pair a new iPhone or iPad">Add device</button>
     </section>
     <section id="deviceList" class="cards"></section>
     <p id="footerStatus" class="footer"></p>
@@ -44,6 +44,7 @@
     </div>
   </div>
 
-  <script src="app.js"></script>
+  <script src="product_map.js?v=0.9.0"></script>
+  <script src="app.js?v=0.9.0"></script>
 </body>
 </html>
