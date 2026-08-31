@@ -1,12 +1,13 @@
 # Changelog
 
-## 0.9.1 — 2026-08-31
+## 0.9.2 — 2026-08-31
 
-- Publish-ready layout: `idevice_battery/` folder, `repository.yaml`, GHCR `image:`
-- Multi-arch build (`aarch64`, `amd64`) via GitHub Actions
-- AppArmor profile (`apparmor.txt`); Ingress UI binds `172.30.32.2:8109`
-- Slug renamed `idevice_pair` → `idevice_battery` (matches product name)
-- `stage: experimental`, watchdog, `translations/en.yaml`, per-app `DOCS.md`
+- Add-on info `url` → https://github.com/eMMeCodes/iDeviceBattery (link in Supervisor UI)
+- Slug migration `idevice_pair` → `idevice_battery`
+- Seed device registry from `/share/idevice_battery.json`; lockdown backup/restore via share
+- AppArmor: S6 `/init` + dual profile (`local_idevice_battery` / `idevice_battery`)
+- Watchdog URL uses `[HOST]:[PORT:8109]`; map `homeassistant_config:ro`
+- Dockerfile: default `BUILD_ARCH=aarch64` (silence CI lint warning)
 
 ## 0.9.0 — 2026-08-31
 
@@ -22,8 +23,7 @@
 
 - Multi-device registry, Wi‑Fi IPv4 auto-detect (Bonjour)
 - Accessory Discover / Check now
-- Ingress overlay `/share/idevice_ui` was a dev shortcut for UI tweaks without
-  rebuilding the image; it is optional and not required for normal use.
+- Ingress overlay `/share/idevice_ui` for live UI without image rebuild
 
 ## 0.6.1 — 2026-08-30
 

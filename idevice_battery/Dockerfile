@@ -1,5 +1,5 @@
 # https://developers.home-assistant.io/docs/apps/configuration#app-dockerfile
-ARG BUILD_ARCH
+ARG BUILD_ARCH=aarch64
 ARG BUILD_FROM=ghcr.io/home-assistant/${BUILD_ARCH}-base-debian:bookworm
 FROM ${BUILD_FROM}
 
@@ -28,7 +28,7 @@ RUN apt-get update \
 
 RUN pip3 install --no-cache-dir --break-system-packages 'pymobiledevice3>=11.2.0' 'paho-mqtt>=2.0.0'
 
-ARG UI_BUILD=0.9.1
+ARG UI_BUILD=0.9.2
 RUN echo "ui ${UI_BUILD}" > /tmp/ui-build-id
 
 COPY devices_store.py pair_service.py webui.py rsd_battery.py mqtt_ha.py product_map.json run.sh /

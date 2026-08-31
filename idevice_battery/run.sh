@@ -94,6 +94,11 @@ echo "=== iDevice Battery $(date -Iseconds) poll=${POLL}s ($((POLL / 60)) min) =
 mkdir -p /data/lockdown /data/.pymobiledevice3 /var/lib /run/avahi-daemon /run/dbus /var/run /share
 ln -sfn /data/lockdown /var/lib/lockdown
 chmod 777 /data/lockdown
+if [ -d /share/idevice_lockdown_backup ] && [ -z "$(ls -A /data/lockdown 2>/dev/null)" ]; then
+  cp -a /share/idevice_lockdown_backup/. /data/lockdown/ 2>/dev/null || true
+  chmod -R 777 /data/lockdown 2>/dev/null || true
+  echo "[migrate] lockdown restored from /share/idevice_lockdown_backup"
+fi
 
 # Seed devices.json from legacy options if needed
 python3 - <<'PY'

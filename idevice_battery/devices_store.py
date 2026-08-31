@@ -11,6 +11,7 @@ from typing import Any
 DATA = Path(os.environ.get("IDEVICE_DATA", "/data"))
 DEVICES_PATH = DATA / "devices.json"
 OPTS_PATH = DATA / "options.json"
+BATTERY_JSON = Path(os.environ.get("IDEVICE_BATTERY_JSON", "/share/idevice_battery.json"))
 
 
 def _now() -> str:
@@ -37,6 +38,32 @@ def _poll_seconds_from_opts(opts: dict[str, Any]) -> int | None:
         except (TypeError, ValueError):
             return None
     return None
+
+
+def _seed_from_battery_json(store: dict[str, Any]) -> None:
+    """One-time migration: rebuild registry from /share/idevice_battery.json."""
+    if store["devices"] or not BATTERY_JSON.exists():
+        return
+    try:
+        raw = json.loads(BATTERY_JSON.read_text())
+        for entry in raw.get("devices") or []:
+            udid = (entry.get("udid") or "").strip()
+            host = (entry.get("host") or "").strip()
+            if not udid or not host:
+                continue
+            store["devices"].append(
+                {
+                    "udid": udid,
+                    "host": host,
+                    "name": entry.get("name") or udid[:8],
+                    "product_type": entry.get("product_type") or "",
+                    "added_at": _now(),
+                }
+            )
+        if store["devices"]:
+            save_store(store)
+    except Exception:
+        pass
 
 
 def load_store() -> dict[str, Any]:
@@ -71,7 +98,9 @@ def load_store() -> dict[str, Any]:
             save_store(store)
         except Exception:
             pass
-    elif OPTS_PATH.exists():
+    if not store["devices"]:
+        _seed_from_battery_json(store)
+    if OPTS_PATH.exists():
         try:
             opts = json.loads(OPTS_PATH.read_text())
             poll = _poll_seconds_from_opts(opts)
