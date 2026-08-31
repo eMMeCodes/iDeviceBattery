@@ -29,7 +29,7 @@ def _resolve_www() -> Path:
 
 WWW = _resolve_www()
 BATTERY_JSON = Path(os.environ.get("IDEVICE_BATTERY_JSON", "/share/idevice_battery.json"))
-HOST = os.environ.get("IDEVICE_UI_HOST", "172.30.32.2")
+HOST = os.environ.get("IDEVICE_UI_HOST", "0.0.0.0")
 PORT = int(os.environ.get("IDEVICE_UI_PORT", "8109"))
 
 

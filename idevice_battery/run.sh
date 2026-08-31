@@ -11,6 +11,7 @@ if [ -f /share/idevice_ui/app.js ]; then
   export IDEVICE_WWW=/share/idevice_ui
 fi
 export IDEVICE_UI_PORT=8109
+export IDEVICE_UI_HOST="${IDEVICE_UI_HOST:-0.0.0.0}"
 export PYTHONPATH=/
 
 OPTS=/data/options.json

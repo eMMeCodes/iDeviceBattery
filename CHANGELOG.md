@@ -1,14 +1,5 @@
 # Changelog
 
-## 0.9.2 — 2026-08-31
-
-- Add-on info `url` → https://github.com/eMMeCodes/iDeviceBattery (link in Supervisor UI)
-- Slug migration `idevice_pair` → `idevice_battery`
-- Seed device registry from `/share/idevice_battery.json`; lockdown backup/restore via share
-- AppArmor: S6 `/init` + dual profile (`local_idevice_battery` / `idevice_battery`)
-- Watchdog URL uses `[HOST]:[PORT:8109]`; map `homeassistant_config:ro`
-- Dockerfile: default `BUILD_ARCH=aarch64` (silence CI lint warning)
-
 ## 0.9.0 — 2026-08-31
 
 - Ingress UI: compact cards, fold Device / Accessories, copy `entity_id`

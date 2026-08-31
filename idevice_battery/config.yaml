@@ -1,5 +1,5 @@
 name: iDevice Battery
-version: 0.9.2
+version: 0.9.3
 slug: idevice_battery
 description: "Pair iDevices over USB, then track hub + accessory battery over Wi-Fi (RemotePairing RSD). Publishes MQTT discovery to Home Assistant."
 url: "https://github.com/eMMeCodes/iDeviceBattery"
