@@ -22,7 +22,9 @@ from pair_service import (
 
 def _resolve_www() -> Path:
     overlay = Path("/share/idevice_ui")
-    if (overlay / "app.js").is_file():
+    env_on = os.environ.get("IDEVICE_UI_OVERLAY", "").strip() in ("1", "true", "yes")
+    flag = (overlay / ".enable").is_file()
+    if (env_on or flag) and (overlay / "app.js").is_file():
         return overlay
     return Path(os.environ.get("IDEVICE_WWW", "/www"))
 

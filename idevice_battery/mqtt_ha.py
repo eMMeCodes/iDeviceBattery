@@ -384,14 +384,6 @@ def unpublish_entry(entry: dict[str, Any] | None, udid: str) -> None:
         _disconnect(client)
 
 
-def entity_ids_for_udid(udid: str) -> dict[str, str]:
-    key = udid_key(udid)
-    return {
-        "battery": f"sensor.idevice_{key}_battery",
-        "battery_state": f"sensor.idevice_{key}_battery_state",
-    }
-
-
 def _ha_api_get(path: str) -> Any:
     token = os.environ.get("SUPERVISOR_TOKEN")
     if not token:
@@ -541,12 +533,6 @@ def lookup_ha_entities_many(
             return result
         time.sleep(delay)
     return result
-
-
-def lookup_ha_entities(udid: str, *, retries: int = 10, delay: float = 0.4) -> dict[str, Optional[str]]:
-    return lookup_ha_entities_many([udid], retries=retries, delay=delay).get(
-        udid, {"battery": None, "battery_state": None}
-    )
 
 
 def resolve_entities_for_entry(entry: dict[str, Any]) -> list[dict[str, Any]]:

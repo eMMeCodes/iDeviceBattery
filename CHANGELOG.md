@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.4 — 2026-08-31
+
+- Overlay UI `/share/idevice_ui` is opt-in (`.enable` or `IDEVICE_UI_OVERLAY=1`)
+- Remove unused `_watch_via_remotepairing`, `entity_ids_for_udid`, `lookup_ha_entities`
+- No stack traces for expected companion/Bonjour failures
+- Docs: slug `idevice_battery`, AppArmor, log markers
+
+## 0.9.3 — 2026-08-31
+
+- Ingress Web UI binds `0.0.0.0:8109` (`host_network` cannot bind `172.30.32.2`)
+
+## 0.9.2 — 2026-08-31
+
+- Add-on info `url` → https://github.com/eMMeCodes/iDeviceBattery
+- Slug `idevice_battery`; AppArmor S6 `/init`; watchdog `[HOST]:[PORT:8109]`
+- Migrate devices/lockdown from previous `idevice_pair` install via share
+
 ## 0.9.0 — 2026-08-31
 
 - Ingress UI: compact cards, fold Device / Accessories, copy `entity_id`

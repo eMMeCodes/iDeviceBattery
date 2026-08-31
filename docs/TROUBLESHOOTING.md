@@ -52,5 +52,5 @@ ha apps logs local_idevice_battery
 cat /share/idevice_battery.json
 ```
 
-Useful log markers: `PHONE_OK`, `REMOTEPAIRING`, `TUNNEL_OK`, `RSD_OK`, `WATCH_OK`,
-`PHONE_FAIL`, `WATCH_FAIL`.
+Useful log markers: `PHONE_OK`, `PHONE_FAIL`, `REMOTEPAIRING`, `TUNNEL_OK`, `RSD_OK`,
+`WATCH_OK`, `COMPANION_FAIL`, `ACCESSORY_OK`.

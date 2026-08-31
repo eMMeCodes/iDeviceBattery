@@ -19,7 +19,9 @@ is a normal, valid state.
 ## Repository layout
 
 ```
-addon/                      Home Assistant local add-on (copy to /addons/idevice_pair/)
+idevice_battery/            Home Assistant app (source of truth for GitHub publish)
+repository.yaml             Add-on store metadata
+.github/workflows/          GHCR multi-arch build
 docs/                       Architecture, pairing, troubleshooting
 homeassistant/
   packages/                 optional command_line fallback (MQTT discovery is primary)
@@ -32,14 +34,22 @@ homeassistant/
 - Mosquitto (or another MQTT broker) — add-on requests `mqtt:need`
 - Device on the same LAN as Home Assistant
 - One-time USB connection to the HA host (Trust + RemotePairing)
-- Add-on privileges: `usb`, `udev`, `host_network`, `share:rw`, AppArmor off
+- Add-on privileges: `usb`, `udev`, `host_network`, `share:rw`, custom AppArmor profile
 
 ## Quick start
 
 ### 1. Install the add-on
 
+**From GitHub:** add `https://github.com/eMMeCodes/iDeviceBattery` under
+**Settings → Add-ons → Add-on store → ⋮ → Repositories**, then install
+**iDevice Battery**.
+
+**Local development on HA OS:** copy the app folder and build locally (remove
+`image:` from `config.yaml` first):
+
 ```bash
-cp -a addon /addons/idevice_pair
+cp -a idevice_battery /addons/idevice_battery
+# edit /addons/idevice_battery/config.yaml — delete the image: line
 ```
 
 Then: **Settings → Add-ons → Add-on store → ⋮ → Check for updates → iDevice Battery → Install**.
@@ -117,6 +127,9 @@ values stay on screen.
 - [Architecture](docs/ARCHITECTURE.md)
 - [Pairing](docs/PAIRING.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
+
+Published at [eMMeCodes/iDeviceBattery](https://github.com/eMMeCodes/iDeviceBattery).
+Push to `main` builds `ghcr.io/emmecodes/idevice-battery` (`aarch64` + `amd64`).
 
 ## License
 

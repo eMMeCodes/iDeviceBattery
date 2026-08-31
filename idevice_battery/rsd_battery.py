@@ -243,18 +243,6 @@ async def _companion_via_remotepairing(
         tunnel_service.USE_USERSPACE_TUNNEL = False
 
 
-async def _watch_via_remotepairing(
-    host: str | None = None, udid: str | None = None
-) -> dict[str, Any]:
-    """Backward-compatible: return Watch dict or raise."""
-    comp = await _companion_via_remotepairing(host=host, udid=udid)
-    if comp.get("watch"):
-        return comp["watch"]
-    if comp.get("error"):
-        raise RuntimeError(comp["error"])
-    raise RuntimeError("no accessories on the last scan")
-
-
 async def fetch_hub(dev: dict[str, Any], prev_entry: dict[str, Any] | None = None) -> dict[str, Any]:
     global UDID, HOST
     udid = dev["udid"]
@@ -318,7 +306,6 @@ async def fetch_hub(dev: dict[str, Any], prev_entry: dict[str, Any] | None = Non
     except Exception as e:
         errors.append(f"accessories: {type(e).__name__}: {e}")
         print(f"COMPANION_FAIL {type(e).__name__}: {e}", flush=True)
-        traceback.print_exc()
 
     # Hub reachability drives card status; accessory issues are non-fatal
     if errors:

@@ -7,7 +7,10 @@ export IDEVICE_BATTERY_JSON=/share/idevice_battery.json
 export IDEVICE_CDTUNNEL_MTU="${IDEVICE_CDTUNNEL_MTU:-16000}"
 export IDEVICE_DATA=/data
 export IDEVICE_WWW=/www
-if [ -f /share/idevice_ui/app.js ]; then
+# Dev overlay: only if explicitly enabled (avoids stale /share UI hijacking Ingress)
+if [ "${IDEVICE_UI_OVERLAY:-0}" = "1" ] && [ -f /share/idevice_ui/app.js ]; then
+  export IDEVICE_WWW=/share/idevice_ui
+elif [ -f /share/idevice_ui/.enable ] && [ -f /share/idevice_ui/app.js ]; then
   export IDEVICE_WWW=/share/idevice_ui
 fi
 export IDEVICE_UI_PORT=8109
