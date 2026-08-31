@@ -1256,10 +1256,18 @@
     ev.preventDefault();
     try {
       if (window.top && window.top !== window) {
+        if (window.top.history.length > 1) {
+          window.top.history.back();
+          return;
+        }
         window.top.location.href = ADDON_INFO;
         return;
       }
     } catch (_) { /* cross-origin */ }
+    if (history.length > 1) {
+      history.back();
+      return;
+    }
     window.location.href = ADDON_INFO;
   });
 

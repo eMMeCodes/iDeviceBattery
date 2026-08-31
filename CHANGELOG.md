@@ -1,25 +1,29 @@
 # Changelog
 
+## 0.9.6 — 2026-08-31
+
+- Store `logo.png` uses the same simple artwork as `icon.png`
+- Single AppArmor profile (`idevice_battery`); Supervisor rewrites the runtime name
+- Drop unused `homeassistant_config` mapping
+- Back from Web UI prefers browser history (works after reinstall / GitHub slug)
+
 ## 0.9.5 — 2026-08-31
 
-- Real `icon.png` (battery + iPhone) and `logo.png` (full device scene) for the add-on store
+- Add-on store `icon.png` / `logo.png` artwork
 
 ## 0.9.4 — 2026-08-31
 
-- Overlay UI `/share/idevice_ui` is opt-in (`.enable` or `IDEVICE_UI_OVERLAY=1`)
-- Remove unused `_watch_via_remotepairing`, `entity_ids_for_udid`, `lookup_ha_entities`
-- No stack traces for expected companion/Bonjour failures
-- Docs: slug `idevice_battery`, AppArmor, log markers
+- Overlay UI `/share/idevice_ui` is opt-in
+- Remove unused Python helpers; quieter companion failures
 
 ## 0.9.3 — 2026-08-31
 
-- Ingress Web UI binds `0.0.0.0:8109` (`host_network` cannot bind `172.30.32.2`)
+- Ingress Web UI binds `0.0.0.0:8109`
 
 ## 0.9.2 — 2026-08-31
 
-- Add-on info `url` → https://github.com/eMMeCodes/iDeviceBattery
-- Slug `idevice_battery`; AppArmor S6 `/init`; watchdog `[HOST]:[PORT:8109]`
-- Migrate devices/lockdown from previous `idevice_pair` install via share
+- Add-on info `url` → GitHub repo; slug `idevice_battery`
+- Migrate devices/lockdown from `idevice_pair` via share
 
 ## 0.9.0 — 2026-08-31
 

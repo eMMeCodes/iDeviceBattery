@@ -5,7 +5,7 @@ and publish MQTT discovery sensors to Home Assistant.
 
 ## Requirements
 
-- Home Assistant OS or Supervised
+- Home Assistant OS or Supervised (**aarch64** or **amd64**). Not HA Core/Container.
 - MQTT broker (the app requests `mqtt:need`)
 - iPhone/iPad on the same LAN as Home Assistant
 - One-time USB connection to the HA host (Trust + RemotePairing)

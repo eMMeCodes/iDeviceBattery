@@ -1,6 +1,8 @@
 #include <tunables/global>
 
-profile local_idevice_battery flags=(attach_disconnected,mediate_deleted) {
+# Profile name = config.yaml slug. Supervisor rewrites it to
+# local_<slug> or <repo>_<slug> at install time. Only ONE profile allowed.
+profile idevice_battery flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
   #include <abstractions/nameservice>
   #include <abstractions/dbus-strict>
@@ -59,76 +61,6 @@ profile local_idevice_battery flags=(attach_disconnected,mediate_deleted) {
 
   /data/** rw,
   /share/** rw,
-  /config/** r,
-  /homeassistant_config/** r,
-  /tmp/** rw,
-  /proc/** r,
-  /sys/** r,
-
-  signal (receive) peer=unconfined,
-}
-
-# Same rules for installs from a GitHub repository (slug without local_ prefix).
-profile idevice_battery flags=(attach_disconnected,mediate_deleted) {
-  #include <abstractions/base>
-  #include <abstractions/nameservice>
-  #include <abstractions/dbus-strict>
-
-  file,
-  network,
-  dbus,
-
-  capability net_bind_service,
-  capability sys_admin,
-  capability dac_override,
-  capability setgid,
-  capability setuid,
-  capability chown,
-  capability fowner,
-
-  signal (send) set=(kill,term,int,hup,cont),
-
-  /init ix,
-  /bin/** ix,
-  /usr/bin/** ix,
-  /sbin/** ix,
-  /usr/sbin/** ix,
-  /usr/local/bin/** ix,
-  /run/{s6,s6-rc*,service}/** ix,
-  /package/** ix,
-  /command/** ix,
-  /etc/services.d/** rwix,
-  /etc/cont-init.d/** rwix,
-  /etc/cont-finish.d/** rwix,
-  /run/** rwk,
-  /dev/tty rw,
-
-  /usr/lib/** mr,
-  /usr/libexec/** mr,
-  /lib/** mr,
-  /lib64/** mr,
-
-  /usr/bin/python3* ix,
-  /usr/lib/python3*/** mr,
-
-  /run.sh ix,
-  /**.py ix,
-  /www/** r,
-
-  /dev/bus/usb/** rw,
-  /dev/null rw,
-  /dev/urandom r,
-  /dev/random r,
-
-  /var/run/** rw,
-  /var/lib/lockdown/** rw,
-  /var/lib/dbus/** rw,
-  /var/lib/avahi-daemon/** rw,
-
-  /data/** rw,
-  /share/** rw,
-  /config/** r,
-  /homeassistant_config/** r,
   /tmp/** rw,
   /proc/** r,
   /sys/** r,

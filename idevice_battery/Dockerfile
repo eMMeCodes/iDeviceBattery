@@ -28,7 +28,7 @@ RUN apt-get update \
 
 RUN pip3 install --no-cache-dir --break-system-packages 'pymobiledevice3>=11.2.0' 'paho-mqtt>=2.0.0'
 
-ARG UI_BUILD=0.9.4
+ARG UI_BUILD=0.9.6
 RUN echo "ui ${UI_BUILD}" > /tmp/ui-build-id
 
 COPY devices_store.py pair_service.py webui.py rsd_battery.py mqtt_ha.py product_map.json run.sh /
