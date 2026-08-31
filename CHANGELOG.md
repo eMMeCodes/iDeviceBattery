@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.5 — 2026-08-31
+
+- Real `icon.png` (battery + iPhone) and `logo.png` (full device scene) for the add-on store
+
 ## 0.9.4 — 2026-08-31
 
 - Overlay UI `/share/idevice_ui` is opt-in (`.enable` or `IDEVICE_UI_OVERLAY=1`)
