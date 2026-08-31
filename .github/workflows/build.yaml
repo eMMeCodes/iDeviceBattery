@@ -29,7 +29,7 @@ jobs:
       url: ${{ steps.normalize.outputs.url }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Get app information
         id: info
@@ -39,16 +39,20 @@ jobs:
 
       - name: Normalize app information
         id: normalize
+        env:
+          IMAGE: ${{ steps.info.outputs.image }}
+          VERSION: ${{ steps.info.outputs.version }}
+          NAME: ${{ steps.info.outputs.name }}
+          DESCRIPTION: ${{ steps.info.outputs.description }}
+          URL: ${{ steps.info.outputs.url }}
         run: |
-          image=${{ steps.info.outputs.image }}
-          echo "image_name=${image##*/}" >> "$GITHUB_OUTPUT"
-          echo "registry_prefix=${image%/*}" >> "$GITHUB_OUTPUT"
-          echo "version=${{ steps.info.outputs.version }}" >> "$GITHUB_OUTPUT"
-          echo "name=${{ steps.info.outputs.name }}" >> "$GITHUB_OUTPUT"
-          echo "description=${{ steps.info.outputs.description }}" >> "$GITHUB_OUTPUT"
-          url=${{ steps.info.outputs.url }}
-          if [[ -n "$url" && "$url" != "null" ]]; then
-            echo "url=${url}" >> "$GITHUB_OUTPUT"
+          echo "image_name=${IMAGE##*/}" >> "$GITHUB_OUTPUT"
+          echo "registry_prefix=${IMAGE%/*}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "description=${DESCRIPTION}" >> "$GITHUB_OUTPUT"
+          if [[ -n "${URL}" && "${URL}" != "null" ]]; then
+            echo "url=${URL}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Prepare build matrix
@@ -72,7 +76,7 @@ jobs:
       matrix: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           persist-credentials: false
 
