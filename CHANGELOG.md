@@ -1,5 +1,109 @@
 # Changelog
 
+## 0.9.25 — 2026-09-04
+
+- Two roles only: **device** (paired iPhone/iPad) and **accessory** (Watch, AirPods, …)
+- Each node has `kind` (`iphone`, `watch`, `airpods`, …) plus `stale` / `updated_at`
+- Watch is no longer a special slot; it is an accessory with `kind=watch`
+- JSON still writes legacy `hub` / `watch` / `phone` aliases for older sensors
+
+## 0.9.24 — 2026-09-04
+
+- Remove unused USB Re-pair / diagnose API and dead UI CSS (folders, chevrons, tips)
+- Discover now sets `watch_stale` / `watch_updated_at` like a normal poll
+- English-only comments and user-facing strings; log markers `HUB_OK` / `HUB_FAIL`
+
+## 0.9.23 — 2026-09-04
+
+- Remove USB Re-pair from device cards (Add wizard covers USB RemotePairing)
+- Cards stay Discover + Remove only
+
+## 0.9.22 — 2026-09-04
+
+- Collapsed card: full-card hover + click to expand
+- Discover on every device (scan for new accessories over Wi‑Fi)
+- USB Re-pair only when RemotePairing record is missing (not for normal Discover)
+
+## 0.9.21 — 2026-09-04
+
+- Hover only on collapsed cards; remove expand chevrons
+
+## 0.9.20 — 2026-09-04
+
+- Closed-card hover covers the full card (not only the title button)
+
+## 0.9.19 — 2026-09-03
+
+- Remove divider above device info; remove accessory left border
+- Hover feedback on expandable row and all buttons
+
+## 0.9.18 — 2026-09-03
+
+- Lift card greys so devices read clearly against the Web UI background; stronger zebra
+
+## 0.9.17 — 2026-09-03
+
+- Neutral grey palette: light zebra device cards; deeper inset layers when accessories present
+- Color reserved for battery bar / status badges
+
+## 0.9.16 — 2026-09-03
+
+- Device info block grouped with matching accent fill/border
+- Softer card and accessory borders
+
+## 0.9.15 — 2026-09-03
+
+- Device cards alternate green / amber tint; accessories stay blue
+
+## 0.9.14 — 2026-09-03
+
+- Accessory battery bar vertically centered like hub rows
+- Accessory cards tinted (accent) to distinguish from device cards
+
+## 0.9.13 — 2026-09-03
+
+- Web UI: remove instructional status banners (RemotePairing / unlock / Discover hints)
+
+## 0.9.12 — 2026-09-03
+
+- Web UI: flat device expand (info + accessory rows, no Device/Accessories folders)
+- Watch / accessories only on the hub that owns them (no global Watch on iPads)
+- Hide empty accessory UI; Re-pair Watch only when relevant
+- Remove tooltip titles
+
+## 0.9.11 — 2026-09-03
+
+- Detect missing RemotePairing record (`remote_<UDID>.plist`) — main cause of stuck Watch after reinstall
+- Backup/restore RemotePairing plists under `/share/idevice_remotepairing_backup`
+- Web UI **Re-pair Watch** (USB) + diagnose dump `/share/idevice_diag.json`
+
+## 0.9.10 — 2026-09-03
+
+- Mark Watch / accessories **stale** when RemotePairing fails (keep last-known %, show in UI)
+- Do not republish stale Watch over MQTT while hub may still update
+- Retry Bonjour RemotePairing browse a few times before giving up
+
+## 0.9.9 — 2026-08-31
+
+- **Local install:** remove `image:` from `/addons/idevice_battery/config.yaml` so Supervisor
+  builds from source (GHCR image was stuck at 0.9.6)
+- Web UI ↻ shows footer feedback (Updated vs no response / asleep)
+- `/api/status` includes running add-on `version`
+
+## 0.9.8 — 2026-08-31
+
+- Fix manual ↻ refresh crash (`name 'result' is not defined`)
+- Refresh hub Wi‑Fi IP from Bonjour **every poll** (not only on `.local`/IPv6)
+- Retry lockdown `:62078` once after Bonjour host rediscovery on timeout
+- Poll hubs in parallel (faster multi-device cycles)
+- Lockdown connect timeout default 20 s (`IDEVICE_LOCKDOWN_TIMEOUT`)
+
+## 0.9.7 — 2026-08-31
+
+- Mark hub data **stale** when a poll fails but last-known values are kept (Web UI badge + per-device `hub_updated_at`)
+- Do not republish stale hub state over MQTT
+- Manual ↻ check uses the same poll path as the background loop
+
 ## 0.9.6 — 2026-08-31
 
 - Store `logo.png` uses the same simple artwork as `icon.png`

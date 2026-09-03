@@ -176,7 +176,7 @@ def _disconnect(client) -> None:
         pass
 
 
-def _hub_device_block(udid: str, name: str, product_type: str) -> dict[str, Any]:
+def _ha_device_block(udid: str, name: str, product_type: str) -> dict[str, Any]:
     return {
         "identifiers": [device_ident(udid)],
         "name": name or model_label(product_type),
@@ -190,10 +190,10 @@ def _acc_device_block(
     udid: str,
     name: str,
     product_type: str,
-    via_hub_udid: str,
+    via_device_udid: str,
 ) -> dict[str, Any]:
-    block = _hub_device_block(udid, name, product_type)
-    block["via_device"] = device_ident(via_hub_udid)
+    block = _ha_device_block(udid, name, product_type)
+    block["via_device"] = device_ident(via_device_udid)
     return block
 
 
@@ -209,18 +209,20 @@ def publish_node(
     product_type: str,
     battery_level: Any,
     battery_state: Any,
-    via_hub_udid: str | None = None,
+    via_device_udid: str | None = None,
+    kind: str | None = None,
+    role: str | None = None,
 ) -> None:
     key = udid_key(udid)
     state_batt = f"{TOPIC_ROOT}/{key}/battery"
     state_chg = f"{TOPIC_ROOT}/{key}/battery_state"
     attr_topic = f"{TOPIC_ROOT}/{key}/attributes"
 
-    if via_hub_udid:
-        device = _acc_device_block(udid, name, product_type, via_hub_udid)
+    if via_device_udid:
+        device = _acc_device_block(udid, name, product_type, via_device_udid)
         display = name or model_label(product_type, "Accessory")
     else:
-        device = _hub_device_block(udid, name, product_type)
+        device = _ha_device_block(udid, name, product_type)
         display = name or model_label(product_type)
 
     batt_cfg = {
@@ -264,7 +266,9 @@ def publish_node(
                 "name": display,
                 "product_type": product_type or None,
                 "model": model_label(product_type),
-                "via_hub_udid": via_hub_udid,
+                "role": role or ("accessory" if via_device_udid else "device"),
+                "kind": kind,
+                "via_device_udid": via_device_udid,
             }
         ),
     )
@@ -285,66 +289,66 @@ def unpublish_node(client, udid: str) -> None:
 
 
 def collect_udids_from_entry(entry: dict[str, Any]) -> list[str]:
+    from model import accessories_from_entry
+
     udids: list[str] = []
-    hub_udid = entry.get("udid")
-    if hub_udid:
-        udids.append(hub_udid)
-    watch = entry.get("watch") or {}
-    if watch.get("udid"):
-        udids.append(watch["udid"])
-    for a in entry.get("accessories") or []:
+    device_udid = entry.get("udid")
+    if device_udid:
+        udids.append(device_udid)
+    for a in accessories_from_entry(entry):
         if a.get("udid"):
             udids.append(a["udid"])
     return udids
 
 
 def sync_entry(entry: dict[str, Any]) -> None:
-    """Publish discovery + state for one hub entry (and accessories)."""
+    """Publish discovery + state for one device (and its accessories)."""
+    from model import accessories_from_entry, device_battery
+
     ensure_mqtt_env_from_supervisor()
     client, cfg = _client()
     if client is None:
         print(f"[mqtt] skip sync (enabled={cfg.get('enabled')} host={cfg.get('host')!r})", flush=True)
         return
     try:
-        hub_udid = entry.get("udid")
-        if not hub_udid:
+        view = device_battery(entry)
+        device_udid = view.get("udid")
+        if not device_udid:
             return
-        hub = entry.get("hub") or {}
-        name = hub.get("name") or entry.get("name") or hub_udid[:8]
-        product_type = hub.get("product_type") or entry.get("product_type") or ""
-        if hub.get("battery_level") is not None:
+        name = view.get("name") or device_udid[:8]
+        product_type = view.get("product_type") or ""
+        if view.get("stale"):
+            print(f"[mqtt] skip stale device {view.get('kind')} {device_udid[:8]}…", flush=True)
+        elif view.get("battery_level") is not None:
             publish_node(
                 client,
-                udid=hub_udid,
+                udid=device_udid,
                 name=name,
                 product_type=product_type,
-                battery_level=hub.get("battery_level"),
-                battery_state=hub.get("battery_state") or "unknown",
+                battery_level=view.get("battery_level"),
+                battery_state=view.get("battery_state") or "unknown",
+                kind=view.get("kind"),
+                role="device",
             )
         else:
-            # Still announce device so entity exists; state unknown
             publish_node(
                 client,
-                udid=hub_udid,
+                udid=device_udid,
                 name=name,
                 product_type=product_type,
                 battery_level=None,
                 battery_state=None,
+                kind=view.get("kind"),
+                role="device",
             )
 
-        watch = entry.get("watch")
-        if watch and watch.get("udid") and watch.get("battery_level") is not None:
-            publish_node(
-                client,
-                udid=watch["udid"],
-                name=watch.get("name") or "Watch",
-                product_type=watch.get("product_type") or "",
-                battery_level=watch.get("battery_level"),
-                battery_state=watch.get("battery_state") or "unknown",
-                via_hub_udid=hub_udid,
-            )
-
-        for a in entry.get("accessories") or []:
+        for a in accessories_from_entry(entry):
+            if a.get("stale"):
+                print(
+                    f"[mqtt] skip stale accessory {a.get('kind')} via {device_udid[:8]}…",
+                    flush=True,
+                )
+                continue
             if not a.get("udid") or a.get("battery_level") is None:
                 continue
             publish_node(
@@ -354,7 +358,9 @@ def sync_entry(entry: dict[str, Any]) -> None:
                 product_type=a.get("product_type") or "",
                 battery_level=a.get("battery_level"),
                 battery_state=a.get("battery_state") or "unknown",
-                via_hub_udid=hub_udid,
+                via_device_udid=device_udid,
+                kind=a.get("kind"),
+                role="accessory",
             )
     finally:
         _disconnect(client)
@@ -536,37 +542,37 @@ def lookup_ha_entities_many(
 
 
 def resolve_entities_for_entry(entry: dict[str, Any]) -> list[dict[str, Any]]:
-    """List Device + accessories with real HA entity_ids after MQTT discovery."""
-    hub = entry.get("hub") or {}
-    hub_udid = entry.get("udid") or ""
-    hub_name = hub.get("name") or entry.get("name") or hub_udid[:8]
-    hub_type = hub.get("product_type") or entry.get("product_type") or ""
+    """List device + accessories with real HA entity_ids after MQTT discovery."""
+    from model import accessories_from_entry, device_battery, kind_label
 
-    extras: list[dict[str, Any]] = []
-    watch = entry.get("watch")
-    if watch and watch.get("udid") and watch.get("battery_level") is not None:
-        extras.append(watch)
-    for a in entry.get("accessories") or []:
-        if a and a.get("udid") and a.get("battery_level") is not None:
-            extras.append(a)
+    view = device_battery(entry)
+    extras = [
+        a
+        for a in accessories_from_entry(entry)
+        if a.get("udid") and a.get("battery_level") is not None
+    ]
+    device_udid = view.get("udid") or ""
+    device_name = view.get("name") or device_udid[:8]
+    device_type = view.get("product_type") or ""
 
-    udids = [hub_udid] + [a["udid"] for a in extras if a.get("udid")]
+    udids = [device_udid] + [a["udid"] for a in extras if a.get("udid")]
     by_udid = lookup_ha_entities_many(udids)
 
     rows: list[dict[str, Any]] = []
-    ids = by_udid.get(hub_udid) or {}
+    ids = by_udid.get(device_udid) or {}
     rows.append(
         {
-            "kind": "device",
-            "udid": hub_udid,
-            "name": hub_name,
-            "product_type": hub_type,
-            "title": f"{hub_name} - {model_label(hub_type)}"
-            if hub_type and model_label(hub_type) != hub_name
-            else hub_name,
-            "unique_id_battery": f"idevice_{udid_key(hub_udid)}_battery" if hub_udid else None,
-            "unique_id_battery_state": f"idevice_{udid_key(hub_udid)}_battery_state"
-            if hub_udid
+            "role": "device",
+            "kind": view.get("kind") or "device",
+            "udid": device_udid,
+            "name": device_name,
+            "product_type": device_type,
+            "title": f"{device_name} - {model_label(device_type)}"
+            if device_type and model_label(device_type) != device_name
+            else device_name,
+            "unique_id_battery": f"idevice_{udid_key(device_udid)}_battery" if device_udid else None,
+            "unique_id_battery_state": f"idevice_{udid_key(device_udid)}_battery_state"
+            if device_udid
             else None,
             "battery": ids.get("battery"),
             "battery_state": ids.get("battery_state"),
@@ -574,12 +580,14 @@ def resolve_entities_for_entry(entry: dict[str, Any]) -> list[dict[str, Any]]:
     )
     for a in extras:
         ids = by_udid.get(a["udid"]) or {}
-        aname = a.get("name") or model_label(a.get("product_type"), "Accessory")
+        fallback = kind_label(a.get("kind"), "Accessory")
+        aname = a.get("name") or model_label(a.get("product_type"), fallback)
         atype = a.get("product_type") or ""
         auk = udid_key(a["udid"])
         rows.append(
             {
-                "kind": "accessory",
+                "role": "accessory",
+                "kind": a.get("kind") or "accessory",
                 "udid": a["udid"],
                 "name": aname,
                 "product_type": atype,

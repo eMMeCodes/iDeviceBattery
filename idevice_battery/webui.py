@@ -35,100 +35,20 @@ HOST = os.environ.get("IDEVICE_UI_HOST", "0.0.0.0")
 PORT = int(os.environ.get("IDEVICE_UI_PORT", "8109"))
 
 
+def _addon_version() -> str:
+    cfg = Path("/build/config.yaml")
+    if cfg.exists():
+        for line in cfg.read_text().splitlines():
+            if line.strip().startswith("version:"):
+                return line.split(":", 1)[1].strip().strip('"').strip("'")
+    return os.environ.get("IDEVICE_VERSION", "dev")
+
+
+ADDON_VERSION = _addon_version()
+
+
 def _force_check(udid: str) -> dict[str, Any]:
     """Run one poll for a paired device and merge into battery JSON."""
-    from datetime import datetime, timezone
-
-    store = load_store()
-    dev = next((d for d in store.get("devices") or [] if d.get("udid") == udid), None)
-    if not dev:
-        raise RuntimeError("device not found")
-    result = verify_device(dev["udid"], dev["host"])
-
-    prev: dict[str, Any] = {}
-    try:
-        if BATTERY_JSON.exists():
-            prev = json.loads(BATTERY_JSON.read_text())
-    except Exception:
-        prev = {}
-
-    prev_entry = next(
-        (e for e in (prev.get("devices") or []) if e.get("udid") == udid),
-        {},
-    )
-    hub = result.get("hub") or prev_entry.get("hub")
-    watch = result.get("watch") or prev_entry.get("watch")
-    accessories = result.get("accessories")
-    if accessories is None:
-        accessories = prev_entry.get("accessories") or []
-    hub_ok = hub and hub.get("battery_level") is not None
-    entry = {
-        "udid": dev["udid"],
-        "host": dev["host"],
-        "name": (hub or {}).get("name") or dev.get("name"),
-        "product_type": (hub or {}).get("product_type") or dev.get("product_type"),
-        "hub": hub,
-        "watch": watch,
-        "accessories": accessories,
-        "error": result.get("error") if not hub_ok else None,
-        "accessory_note": result.get("accessory_note"),
-    }
-
-    ordered = []
-    for d in store.get("devices") or []:
-        if d.get("udid") == udid:
-            ordered.append(entry)
-        else:
-            old = next(
-                (e for e in (prev.get("devices") or []) if e.get("udid") == d.get("udid")),
-                None,
-            )
-            ordered.append(
-                old
-                or {
-                    "udid": d["udid"],
-                    "host": d["host"],
-                    "name": d.get("name"),
-                    "product_type": d.get("product_type"),
-                    "hub": None,
-                    "watch": None,
-                    "accessories": [],
-                    "error": None,
-                }
-            )
-
-    doc = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "path": "remotepairing-userspace-rsd",
-        "devices": ordered,
-        "phone_udid": ordered[0]["udid"] if ordered else udid,
-        "phone": ordered[0].get("hub") if ordered else hub,
-        "watch": ordered[0].get("watch") if ordered else watch,
-        "error": entry.get("error") if not hub_ok else None,
-    }
-    prim = (store.get("devices") or [{}])[0]
-    if prim.get("udid") == udid:
-        doc["phone_udid"] = udid
-        if hub:
-            doc["phone"] = hub
-        if watch:
-            doc["watch"] = watch
-
-    BATTERY_JSON.parent.mkdir(parents=True, exist_ok=True)
-    tmp = BATTERY_JSON.with_suffix(".tmp")
-    tmp.write_text(json.dumps(doc, indent=2, default=str))
-    tmp.replace(BATTERY_JSON)
-    try:
-        from mqtt_ha import sync_entry
-
-        sync_entry(entry)
-    except Exception as e:
-        print(f"[mqtt] force_check sync failed: {e}", flush=True)
-    return {"result": result, "battery": doc}
-
-
-def _force_discover(udid: str) -> dict[str, Any]:
-    """Re-scan companion registry for Watch / AirPods / other accessories."""
     import asyncio
     from datetime import datetime, timezone
 
@@ -145,33 +65,15 @@ def _force_discover(udid: str) -> dict[str, Any]:
             prev = json.loads(BATTERY_JSON.read_text())
     except Exception:
         prev = {}
+
     prev_entry = next(
         (e for e in (prev.get("devices") or []) if e.get("udid") == udid),
         {},
     )
+    entry = asyncio.run(rb.fetch_device(dev, prev_entry))
+    from model import empty_device_entry, snapshot_root
 
-    comp = asyncio.run(
-        rb._companion_via_remotepairing(host=dev["host"], udid=dev["udid"])
-    )
-    if comp.get("watch") or comp.get("accessories"):
-        watch = comp.get("watch") or prev_entry.get("watch")
-        accessories = comp.get("accessories") or []
-    else:
-        watch = prev_entry.get("watch")
-        accessories = prev_entry.get("accessories") or []
-    hub = prev_entry.get("hub")
-
-    entry = {
-        "udid": dev["udid"],
-        "host": dev["host"],
-        "name": prev_entry.get("name") or dev.get("name"),
-        "product_type": prev_entry.get("product_type") or dev.get("product_type"),
-        "hub": hub,
-        "watch": watch,
-        "accessories": accessories,
-        "error": prev_entry.get("error"),
-        "accessory_note": comp.get("error"),
-    }
+    device_ok = entry.get("battery_level") is not None and not entry.get("stale")
 
     ordered = []
     for d in store.get("devices") or []:
@@ -182,24 +84,110 @@ def _force_discover(udid: str) -> dict[str, Any]:
                 (e for e in (prev.get("devices") or []) if e.get("udid") == d.get("udid")),
                 None,
             )
-            ordered.append(old or {"udid": d["udid"], "host": d["host"], "name": d.get("name")})
+            ordered.append(old or empty_device_entry(d))
 
     doc = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "path": "remotepairing-userspace-rsd",
         "devices": ordered,
-        "phone_udid": prev.get("phone_udid"),
-        "phone": prev.get("phone"),
-        "watch": prev.get("watch"),
+        "error": entry.get("error") if not device_ok else None,
+    }
+    doc.update(snapshot_root(ordered, prev))
+
+    BATTERY_JSON.parent.mkdir(parents=True, exist_ok=True)
+    tmp = BATTERY_JSON.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc, indent=2, default=str))
+    tmp.replace(BATTERY_JSON)
+    try:
+        from mqtt_ha import sync_entry
+
+        sync_entry(entry)
+    except Exception as e:
+        print(f"[mqtt] force_check sync failed: {e}", flush=True)
+    return {"result": entry, "battery": doc}
+
+
+def _force_discover(udid: str) -> dict[str, Any]:
+    """Re-scan accessories exposed by a paired device (RemotePairing / CompanionProxy)."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    import rsd_battery as rb
+    from model import (
+        accessories_from_entry,
+        apply_legacy_aliases,
+        device_battery,
+        empty_device_entry,
+        mark_accessories_stale,
+        snapshot_root,
+    )
+
+    store = load_store()
+    dev = next((d for d in store.get("devices") or [] if d.get("udid") == udid), None)
+    if not dev:
+        raise RuntimeError("device not found")
+
+    prev: dict[str, Any] = {}
+    try:
+        if BATTERY_JSON.exists():
+            prev = json.loads(BATTERY_JSON.read_text())
+    except Exception:
+        prev = {}
+    prev_entry = next(
+        (e for e in (prev.get("devices") or []) if e.get("udid") == udid),
+        {},
+    )
+    view = device_battery(prev_entry)
+    prev_acc = accessories_from_entry(prev_entry)
+
+    scan = asyncio.run(
+        rb._accessories_via_remotepairing(host=dev["host"], udid=dev["udid"])
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    found = scan.get("accessories") or []
+    if found:
+        accessories = [{**a, "stale": False, "updated_at": now} for a in found]
+        accessories_error = None
+    else:
+        accessories = mark_accessories_stale(prev_acc)
+        accessories_error = scan.get("error")
+
+    entry = {
+        "udid": dev["udid"],
+        "host": dev["host"],
+        "name": view.get("name") or dev.get("name"),
+        "product_type": view.get("product_type") or dev.get("product_type"),
+        "role": "device",
+        "kind": view.get("kind"),
+        "battery_level": view.get("battery_level"),
+        "battery_state": view.get("battery_state"),
+        "raw": view.get("raw"),
+        "stale": view.get("stale"),
+        "updated_at": view.get("updated_at"),
+        "accessories": accessories,
+        "error": prev_entry.get("error"),
+        "accessories_error": accessories_error,
+    }
+    apply_legacy_aliases(entry)
+
+    ordered = []
+    for d in store.get("devices") or []:
+        if d.get("udid") == udid:
+            ordered.append(entry)
+        else:
+            old = next(
+                (e for e in (prev.get("devices") or []) if e.get("udid") == d.get("udid")),
+                None,
+            )
+            ordered.append(old or empty_device_entry(d))
+
+    doc = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "path": "remotepairing-userspace-rsd",
+        "devices": ordered,
         "error": prev.get("error"),
     }
-    prim = (store.get("devices") or [{}])[0]
-    if prim.get("udid") == udid:
-        doc["phone_udid"] = udid
-        if hub:
-            doc["phone"] = hub
-        if watch:
-            doc["watch"] = watch
+    doc.update(snapshot_root(ordered, prev))
 
     BATTERY_JSON.parent.mkdir(parents=True, exist_ok=True)
     tmp = BATTERY_JSON.with_suffix(".tmp")
@@ -211,7 +199,7 @@ def _force_discover(udid: str) -> dict[str, Any]:
         sync_entry(entry)
     except Exception as e:
         print(f"[mqtt] force_discover sync failed: {e}", flush=True)
-    return {"companion": comp, "battery": doc}
+    return {"accessories": found, "error": scan.get("error"), "battery": doc}
 
 
 def _remove_paired_device(udid: str) -> dict[str, Any]:
@@ -245,7 +233,7 @@ def _read_battery() -> dict[str, Any]:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "iDeviceBatteryUI/0.6"
+    server_version = "iDeviceBatteryUI/0.9.24"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"[ui] {self.address_string()} {fmt % args}", flush=True)
@@ -314,6 +302,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(
                     200,
                     {
+                        "version": ADDON_VERSION,
                         "store": store,
                         "battery": batt,
                         "job": get_job(),
@@ -359,10 +348,6 @@ class Handler(BaseHTTPRequestHandler):
                         r["battery"] = ids["battery"]
                     if ids.get("battery_state"):
                         r["battery_state"] = ids["battery_state"]
-                    # Also try unique_id keys if provided
-                    if not r.get("battery") and r.get("unique_id_battery"):
-                        # registry scan by unique_id already covered via udid_key
-                        pass
                     if udid and not r.get("unique_id_battery"):
                         k = udid_key(udid)
                         r["unique_id_battery"] = f"idevice_{k}_battery"

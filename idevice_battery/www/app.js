@@ -24,30 +24,33 @@
   let discovering = new Set();
   /** UDIDs with expanded card body (default: all collapsed) */
   let expanded = new Set();
-  /** Collapsible sections inside a card: `${udid}:device` | `${udid}:acc` */
-  let sections = new Set();
   /** entity_id cache: udid → { battery, battery_state, title } */
   let entityByUdid = {};
+  let flashUntil = 0;
+  let flashText = "";
+  let flashKind = "";
 
-  function tipAttrs(text) {
-    return `title="${escapeHtml(text || "")}"`;
+  function setFooterMsg(text, kind = "") {
+    flashText = text || "";
+    flashKind = kind || "";
+    flashUntil = text ? Date.now() + 6000 : 0;
+    renderFooter();
   }
 
-  function sectionKey(udid, name) {
-    return `${udid}:${name}`;
-  }
-
-  function isSectionOpen(udid, name) {
-    return sections.has(sectionKey(udid, name));
-  }
-
-  function ensureDefaultSections(udid, hasAccessories) {
-    if (sections.has(`${udid}:_init`)) return;
-    sections.add(`${udid}:_init`);
-    // Device closed by default. Open Accessories only when empty → Discover visible.
-    if (!hasAccessories) {
-      sections.add(sectionKey(udid, "acc"));
+  function renderFooter() {
+    const el = $("footerStatus");
+    if (!el) return;
+    const pollSec = state.store?.poll_seconds || 180;
+    const pollMin = Math.max(1, Math.round(pollSec / 60));
+    const ver = state.version ? ` · v${state.version}` : "";
+    const base = `Auto refresh every ${pollMin} min · ↻ checks one device now${ver}`;
+    if (flashText && Date.now() < flashUntil) {
+      el.className = `footer flash-${flashKind || "info"}`;
+      el.textContent = flashText;
+      return;
     }
+    el.className = "footer";
+    el.textContent = base;
   }
 
   /** Apple ProductType → friendly name (full map in product_map.js) */
@@ -73,54 +76,95 @@
     return host ? `${code} · ${host}` : code;
   }
 
-  const NO_ACC_PRIMARY =
-    "No accessories on the last scan. Use Discover if you expect one.";
-  const ACC_UNLOCK_HINT =
-    "To get data from accessories, the device must be unlocked and on Wi‑Fi. Unlock, then tap refresh.";
+  const KIND_LABELS = {
+    iphone: "iPhone",
+    ipad: "iPad",
+    ipod: "iPod",
+    watch: "Watch",
+    airpods: "AirPods",
+    headphones: "Headphones",
+    pencil: "Pencil",
+    keyboard: "Keyboard",
+    trackpad: "Trackpad",
+    mac: "Mac",
+    accessory: "Accessory",
+    device: "Device",
+  };
 
-  function friendlyError(raw, { hasAcc = false } = {}) {
-    const s = String(raw || "").replace(/^accessories:\s*/i, "");
-    if (/companion registry|none report battery|no accessories/i.test(s) && !hasAcc) {
-      return { primary: NO_ACC_PRIMARY, secondary: ACC_UNLOCK_HINT };
-    }
-    if (/RemotePairing|Bonjour/i.test(s)) {
-      if (hasAcc) {
-        return {
-          primary: "Accessory scan skipped this round — showing the last known values.",
-          secondary: ACC_UNLOCK_HINT,
-        };
-      }
-      return { primary: NO_ACC_PRIMARY, secondary: ACC_UNLOCK_HINT };
-    }
-    if (/Timeout/i.test(s)) {
-      return {
-        primary: "No response on the last check. Tap ↻ when the device is on Wi‑Fi.",
-        secondary: "",
-      };
-    }
-    if (/RuntimeError|Exception|Traceback/i.test(s)) {
-      if (hasAcc) {
-        return {
-          primary: "Couldn't refresh accessories — last known values are still shown.",
-          secondary: ACC_UNLOCK_HINT,
-        };
-      }
-      return { primary: NO_ACC_PRIMARY, secondary: ACC_UNLOCK_HINT };
-    }
-    if (!s) return { primary: "", secondary: "" };
+  function classifyKind(productType, udid) {
+    const p = String(productType || "");
+    const u = String(udid || "");
+    if (p.startsWith("Watch") || u.startsWith("00008310")) return "watch";
+    if (p.startsWith("iPhone")) return "iphone";
+    if (p.startsWith("iPad")) return "ipad";
+    if (p.startsWith("iPod")) return "ipod";
+    if (p.startsWith("AirPods") || p.startsWith("iProd") || p.includes("AirPods")) return "airpods";
+    if (p.startsWith("Beats") || p.includes("Headphone")) return "headphones";
+    if (p.includes("Pencil")) return "pencil";
+    if (p.includes("Keyboard")) return "keyboard";
+    if (p.includes("Trackpad")) return "trackpad";
+    if (p.startsWith("Mac") || p.startsWith("iMac")) return "mac";
+    if (p) return "accessory";
+    return "device";
+  }
+
+  function kindLabel(kind, fallback) {
+    return KIND_LABELS[kind] || fallback || kind || "Device";
+  }
+
+  function deviceView(entry, storeDev, batt) {
+    const d = storeDev || {};
+    const e = entry || {};
+    const hub = e.hub || {};
+    const isPrimary =
+      !batt?.phone_udid || batt.phone_udid === d.udid || !batt;
+    const phone = isPrimary ? batt?.phone : null;
+    const level = e.battery_level ?? hub.battery_level ?? phone?.battery_level ?? null;
+    const state = e.battery_state ?? hub.battery_state ?? phone?.battery_state ?? "";
+    const name = e.name || hub.name || phone?.name || d.name;
+    const productType = e.product_type || hub.product_type || phone?.product_type || d.product_type || "";
+    const stale = e.stale ?? e.hub_stale;
     return {
-      primary: s.length > 120 ? `${s.slice(0, 117)}…` : s,
-      secondary: "",
+      udid: e.udid || hub.udid || d.udid,
+      host: e.host || d.host,
+      name,
+      productType,
+      kind: e.kind || classifyKind(productType, e.udid || d.udid),
+      level,
+      state,
+      stale: !!stale,
+      updatedAt: e.updated_at || e.hub_updated_at,
+      error: e.error,
     };
   }
 
-  function noteHtml(noteObj, muted) {
-    if (!noteObj || !noteObj.primary) return "";
-    const cls = `status-note${muted ? " muted" : ""}`;
-    const sec = noteObj.secondary
-      ? `<span class="status-note-sec">${escapeHtml(noteObj.secondary)}</span>`
-      : "";
-    return `<p class="${cls}">${escapeHtml(noteObj.primary)}${sec}</p>`;
+  function rawAccessories(entry) {
+    const e = entry || {};
+    const staleFb = !!(e.watch_stale || e.accessories_stale);
+    const seen = new Set();
+    const out = [];
+    const push = (raw, front) => {
+      if (!raw || raw.battery_level == null) return;
+      const udid = raw.udid || "";
+      const key = udid || raw.name || String(out.length);
+      if (seen.has(key)) return;
+      seen.add(key);
+      const kind = raw.kind || classifyKind(raw.product_type, udid);
+      const item = {
+        ...raw,
+        kind,
+        stale: raw.stale != null ? !!raw.stale : staleFb,
+      };
+      if (front) out.unshift(item);
+      else out.push(item);
+    };
+    (e.accessories || []).forEach((a) => push(a, false));
+    if (e.watch) push(e.watch, true);
+    return out;
+  }
+
+  function listAccessories(entry) {
+    return rawAccessories(entry).map((a) => accessoryFromDevice(a, { stale: !!a.stale }));
   }
 
   /** Level colors: ≤20 red, ≤30 orange, >30 green. Charging → green (not "Not Charging"). */
@@ -145,93 +189,47 @@
   function battBarHtml(level, chargeState) {
     const pct = level != null && !Number.isNaN(Number(level)) ? Math.max(0, Math.min(100, Number(level))) : null;
     const label = pct != null ? `${Math.round(pct)}%` : "—";
-    const charge = (chargeState || "").replace(/_/g, " ");
     const charging = isChargingState(chargeState);
     const tone = battTone(pct, chargeState);
     const plug = charging
-      ? `<span class="batt-plug" aria-hidden="true" ${tipAttrs("Charging")}>${ICON_PLUG}</span>`
+      ? `<span class="batt-plug" aria-hidden="true">${ICON_PLUG}</span>`
       : "";
     return `
-      <div class="batt-block" ${tipAttrs(charge ? `${label} · ${charge}` : label)}>
+      <div class="batt-block">
         <div class="batt-bar"><div class="batt-fill tone-${tone}" style="width:${pct != null ? pct : 0}%"></div></div>
         <div class="head-batt-row">${plug}<div class="head-batt">${escapeHtml(label)}</div></div>
       </div>`;
   }
 
-  function accessoryFromDevice(dev) {
+  function accessoryFromDevice(dev, { stale = false } = {}) {
     const productType = dev.product_type || "";
-    const name = dev.name || modelLabel(productType, "Accessory");
+    const kind = dev.kind || classifyKind(productType, dev.udid);
+    const name = dev.name || modelLabel(productType, kindLabel(kind, "Accessory"));
     const model = modelLabel(productType, name);
     const title = name !== model ? `${name} · ${model}` : name;
-    const meta = productType || "—";
+    const meta = [kindLabel(kind), productType].filter(Boolean).join(" · ") || "—";
     return {
       udid: dev.udid || "",
+      kind,
       title,
       meta,
       level: dev.battery_level,
       state: dev.battery_state || "",
+      stale: !!stale,
     };
   }
 
-  function statusBadge(entry, hub, accessories) {
-    const hasHub = hub && hub.battery_level != null;
-    const err = entry && entry.error;
-    const accNote = entry && entry.accessory_note;
-    const hasAcc = (accessories && accessories.length > 0);
-    if (hasHub) {
-      const softNote = accNote ? friendlyError(accNote, { hasAcc }) : { primary: "", secondary: "" };
-      return {
-        cls: "ok",
-        text: "Online",
-        title: softNote.primary || "Reached on the last check.",
-        note: softNote,
-        noteMuted: !!softNote.primary,
-      };
-    }
-    if (err && (/Timeout|Bonjour|RemotePairing/i.test(String(err)))) {
-      return {
-        cls: "idle",
-        text: "Not reachable",
-        title: "Couldn't reach this device on the last check.",
-        note: friendlyError(err, { hasAcc }),
-        noteMuted: true,
-      };
-    }
-    if (err) {
-      const n = friendlyError(err, { hasAcc });
-      return {
-        cls: "idle",
-        text: "Not reachable",
-        title: n.primary,
-        note: n,
-        noteMuted: true,
-      };
-    }
-    return {
-      cls: "idle",
-      text: "No data yet",
-      title: "Waiting for the first successful check.",
-      note: { primary: "", secondary: "" },
-      noteMuted: false,
-    };
+  function statusBadge(view) {
+    const hasBatt = view && view.level != null;
+    if (hasBatt && view.stale) return { cls: "idle", text: "Stale" };
+    if (hasBatt) return { cls: "ok", text: "Online" };
+    if (view && view.error) return { cls: "idle", text: "Not reachable" };
+    return { cls: "idle", text: "No data yet" };
   }
 
   function deviceEntry(udid) {
     const list = (state.battery && state.battery.devices) || [];
     return list.find((x) => x.udid === udid) || null;
-  }
-
-  function accessoryRows(entry, watchFallback) {
-    const accessories = [];
-    const watch = (entry && entry.watch) || watchFallback || null;
-    if (watch && watch.battery_level != null) {
-      accessories.push(accessoryFromDevice(watch));
-    }
-    const extras = (entry && entry.accessories) || [];
-    extras.forEach((a) => {
-      accessories.push(accessoryFromDevice(a));
-    });
-    return accessories;
   }
 
   function predictedEntityIds(udid) {
@@ -265,21 +263,10 @@
       <div class="ent-row">
         <span class="ent-kind">${escapeHtml(it.kind)}</span>
         <code class="ent-id">${escapeHtml(it.eid)}</code>
-        <button type="button" class="btn btn-sm btn-copy" data-copy="${escapeHtml(it.eid)}" ${tipAttrs("Copy entity_id")}>Copy</button>
+        <button type="button" class="btn btn-sm btn-copy" data-copy="${escapeHtml(it.eid)}">Copy</button>
       </div>`
       )
       .join("");
-  }
-
-  function foldSection(udid, name, title, bodyHtml, open) {
-    return `
-      <div class="fold${open ? " open" : ""}">
-        <button type="button" class="fold-head" data-section="${escapeHtml(udid)}" data-section-name="${escapeHtml(name)}" aria-expanded="${open}">
-          <span class="chev" aria-hidden="true">${open ? "▾" : "▸"}</span>
-          <span class="fold-title">${escapeHtml(title)}</span>
-        </button>
-        <div class="fold-body${open ? "" : " hidden"}">${bodyHtml}</div>
-      </div>`;
   }
 
   function renderList() {
@@ -290,55 +277,30 @@
     empty.classList.toggle("hidden", devices.length > 0);
     list.innerHTML = "";
 
-    devices.forEach((d) => {
+    devices.forEach((d, idx) => {
       const entry = deviceEntry(d.udid);
-      const isPrimary =
-        !batt.phone_udid || batt.phone_udid === d.udid || devices.length === 1;
-      const hub =
-        (entry && entry.hub) ||
-        (isPrimary ? batt.phone : null);
-      const watchFallback = isPrimary ? batt.watch : null;
-      const accessories = accessoryRows(entry, watchFallback);
-      const b = statusBadge(entry, hub, accessories);
-      const productType = (hub && hub.product_type) || d.product_type || "";
-      const titleName = (hub && hub.name) || d.name || modelLabel(productType);
+      const view = deviceView(entry, d, batt);
+      const accessories = listAccessories(entry);
+      const b = statusBadge(view);
+      const productType = view.productType || "";
+      const titleName = view.name || modelLabel(productType);
       const discoverBusy = discovering.has(d.udid);
-      const hubUdid = (hub && hub.udid) || d.udid;
+      const deviceUdid = view.udid || d.udid;
 
       const chargeLabel =
-        hub && isChargingState(hub.battery_state)
+        view.level != null && isChargingState(view.state)
           ? "Charging"
-          : hub && hub.battery_state
-            ? String(hub.battery_state).replace(/_/g, " ")
+          : view.state
+            ? String(view.state).replace(/_/g, " ")
             : "";
       const busy = checking.has(d.udid);
       const isExpanded = expanded.has(d.udid);
-      if (isExpanded) ensureDefaultSections(d.udid, accessories.length > 0);
-      const deviceOpen = isSectionOpen(d.udid, "device");
-      const accOpen = isSectionOpen(d.udid, "acc");
 
-      const deviceBody = `
-        <div class="tree-item meta-row">
-          <span class="tree-name">Model / IP</span>
-          <strong class="tree-val">${escapeHtml(deviceMeta(productType, d.host))}</strong>
-        </div>
-        <div class="tree-item meta-row">
-          <span class="tree-name">Last check</span>
-          <strong class="tree-val" ${tipAttrs(fmtTsAbsolute(batt.ts))}>${escapeHtml(fmtAgo(batt.ts))}</strong>
-        </div>
-        <div class="ent-block nested">
-          <div class="ent-title">Entities</div>
-          ${renderEntityRows(entityIdsFor(hubUdid))}
-        </div>`;
+      const deviceTs = view.updatedAt || batt.ts;
 
-      const accBody =
+      const accHtml =
         accessories.length === 0
-          ? `<div class="tree-item muted tree-empty">
-              <span class="tree-name">None found</span>
-              <button class="btn btn-sm" data-discover="${escapeHtml(d.udid)}" type="button" ${tipAttrs("Scan again for accessories paired to this device")} ${discoverBusy ? "disabled" : ""}>
-                ${discoverBusy ? "…" : "Discover"}
-              </button>
-            </div>`
+          ? ""
           : accessories
               .map((a) => {
                 const ids = a.udid ? entityIdsFor(a.udid) : null;
@@ -346,8 +308,8 @@
                 <div class="acc-card">
                   <div class="tree-item acc-row">
                     <div class="acc-lines">
-                      <div class="acc-title">${escapeHtml(a.title)}</div>
-                      <div class="acc-meta">${escapeHtml(a.meta)}${a.state ? ` · ${escapeHtml(String(a.state).replace(/_/g, " "))}` : ""}</div>
+                      <div class="acc-title">${escapeHtml(a.title)}${a.stale ? ` <span class="acc-stale">stale</span>` : ""}</div>
+                      <div class="acc-meta">${escapeHtml(a.meta)}${a.state ? ` · ${escapeHtml(String(a.state).replace(/_/g, " "))}` : ""}${a.stale ? " · last known" : ""}</div>
                     </div>
                     ${battBarHtml(a.level, a.state)}
                   </div>
@@ -364,66 +326,66 @@
               .join("");
 
       const card = document.createElement("article");
-      card.className = `card${isExpanded ? " expanded" : " collapsed"}`;
+      const tone = idx % 2 === 0 ? "a" : "b";
+      const hasAccCls = accessories.length ? " card-has-acc" : "";
+      card.className = `card card-tone-${tone}${hasAccCls}${isExpanded ? " expanded" : " collapsed"}`;
       card.innerHTML = `
         <div class="card-row">
-          <button type="button" class="card-main card-toggle" data-toggle="${escapeHtml(d.udid)}" aria-expanded="${isExpanded}" ${tipAttrs(isExpanded ? "Collapse details" : "Show details")}>
-            <span class="chev" aria-hidden="true">${isExpanded ? "▾" : "▸"}</span>
+          <button type="button" class="card-main card-toggle" data-toggle="${escapeHtml(d.udid)}" aria-expanded="${isExpanded}">
             <div class="head-left">
               <h3>${escapeHtml(deviceTitle(titleName, productType))}</h3>
               <div class="status-line">
-                <span class="badge ${b.cls}" ${tipAttrs(b.title)}>${escapeHtml(b.text)}</span>
+                <span class="badge ${b.cls}">${escapeHtml(b.text)}</span>
                 ${chargeLabel ? `<span class="charge-state">${escapeHtml(chargeLabel)}</span>` : ""}
               </div>
             </div>
-            ${battBarHtml(hub && hub.battery_level, hub && hub.battery_state)}
+            ${battBarHtml(view.level, view.state)}
           </button>
-          <button class="btn btn-icon" data-check="${escapeHtml(d.udid)}" type="button" ${tipAttrs("Refresh now")} ${busy ? "disabled" : ""} aria-label="Refresh">
+          <button class="btn btn-icon" data-check="${escapeHtml(d.udid)}" type="button" aria-label="Refresh" ${busy ? "disabled" : ""}>
             ${busy ? "…" : "↻"}
           </button>
         </div>
 
         <div class="card-body${isExpanded ? "" : " hidden"}">
-          ${noteHtml(b.note, b.noteMuted)}
-          ${foldSection(d.udid, "device", "Device", deviceBody, deviceOpen)}
-          ${foldSection(
-            d.udid,
-            "acc",
-            accessories.length ? `Accessories (${accessories.length})` : "Accessories",
-            accBody,
-            accOpen
-          )}
+          <div class="flat-block">
+            <div class="tree-item meta-row">
+              <span class="tree-name">Model / IP</span>
+              <strong class="tree-val">${escapeHtml(deviceMeta(productType, d.host))}</strong>
+            </div>
+            <div class="tree-item meta-row">
+              <span class="tree-name">Last updated</span>
+              <strong class="tree-val">${escapeHtml(fmtAgo(deviceTs))}${view.stale ? " · stale" : ""}</strong>
+            </div>
+            <div class="ent-block nested">
+              <div class="ent-title">Entities</div>
+              ${renderEntityRows(entityIdsFor(deviceUdid))}
+            </div>
+          </div>
+          ${accHtml}
           <div class="card-actions">
-            <button class="btn danger" data-remove="${escapeHtml(d.udid)}" type="button" ${tipAttrs("Remove this paired device from the list")}>Remove</button>
+            <button class="btn btn-sm" data-discover="${escapeHtml(d.udid)}" type="button" ${discoverBusy ? "disabled" : ""}>${discoverBusy ? "…" : "Discover"}</button>
+            <button class="btn danger" data-remove="${escapeHtml(d.udid)}" type="button">Remove</button>
           </div>
         </div>`;
       list.appendChild(card);
+
+      if (!isExpanded) {
+        card.addEventListener("click", (ev) => {
+          if (ev.target.closest("[data-check], [data-remove], [data-discover], [data-copy]")) {
+            return;
+          }
+          expanded.add(d.udid);
+          renderList();
+        });
+      }
     });
 
     list.querySelectorAll("[data-toggle]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const udid = btn.dataset.toggle;
-        if (expanded.has(udid)) expanded.delete(udid);
-        else {
-          expanded.add(udid);
-          const entry = deviceEntry(udid);
-          const isPrimary =
-            !batt.phone_udid || batt.phone_udid === udid || devices.length === 1;
-          const watchFallback = isPrimary ? batt.watch : null;
-          ensureDefaultSections(udid, accessoryRows(entry, watchFallback).length > 0);
-        }
-        renderList();
-      });
-    });
-
-    list.querySelectorAll("[data-section]").forEach((btn) => {
       btn.addEventListener("click", (ev) => {
         ev.stopPropagation();
-        const udid = btn.dataset.section;
-        const name = btn.dataset.sectionName;
-        const key = sectionKey(udid, name);
-        if (sections.has(key)) sections.delete(key);
-        else sections.add(key);
+        const udid = btn.dataset.toggle;
+        if (expanded.has(udid)) expanded.delete(udid);
+        else expanded.add(udid);
         renderList();
       });
     });
@@ -443,8 +405,23 @@
         checking.add(udid);
         renderList();
         try {
-          await api(`/devices/${encodeURIComponent(udid)}/check`, { method: "POST", body: "{}" });
+          const out = await api(`/devices/${encodeURIComponent(udid)}/check`, {
+            method: "POST",
+            body: "{}",
+          });
           await refresh();
+          const entry =
+            out.result ||
+            ((out.battery && out.battery.devices) || []).find((d) => d.udid === udid);
+          const view = deviceView(entry, null, state.battery);
+          if (view.stale) {
+            setFooterMsg("No response — device may be asleep or off Wi‑Fi.", "warn");
+          } else if (view.level != null) {
+            const st = String(view.state || "").replace(/_/g, " ");
+            setFooterMsg(`Updated · ${view.level}%${st ? ` · ${st}` : ""}`, "ok");
+          } else {
+            setFooterMsg("Check finished — no battery data returned.", "warn");
+          }
         } catch (e) {
           alert(e.message || String(e));
         } finally {
@@ -461,11 +438,26 @@
         discovering.add(udid);
         renderList();
         try {
-          await api(`/devices/${encodeURIComponent(udid)}/discover`, {
+          const out = await api(`/devices/${encodeURIComponent(udid)}/discover`, {
             method: "POST",
             body: "{}",
           });
           await refresh();
+          const entry =
+            ((out.battery && out.battery.devices) || []).find((d) => d.udid === udid);
+          const found = (out.accessories || []).filter((a) => a && a.battery_level != null);
+          const staleLeft = listAccessories(entry).some((a) => a.stale);
+          if (found.length) {
+            const kinds = [...new Set(found.map((a) => kindLabel(a.kind || classifyKind(a.product_type, a.udid))))];
+            setFooterMsg(
+              `Discover · ${found.length} ${kinds.join(", ") || "accessories"}`,
+              "ok"
+            );
+          } else if (staleLeft) {
+            setFooterMsg("No accessories this scan — last known kept.", "warn");
+          } else {
+            setFooterMsg("Discover finished — no accessories reported.", "info");
+          }
         } catch (e) {
           alert(e.message || String(e));
         } finally {
@@ -505,23 +497,7 @@
       });
     });
 
-    const pollSec = state.store.poll_seconds || 180;
-    const pollMin = Math.max(1, Math.round(pollSec / 60));
-    $("footerStatus").textContent =
-      `Auto refresh every ${pollMin} min · Expand a device for details · ↻ to check now`;
-  }
-
-  function fmtTsAbsolute(ts) {
-    if (!ts) return "";
-    const d = new Date(ts);
-    if (Number.isNaN(d.getTime())) return "";
-    return d.toLocaleString("en-GB", {
-      hour: "2-digit",
-      minute: "2-digit",
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-    });
+    renderFooter();
   }
 
   function fmtAgo(ts) {
@@ -575,20 +551,9 @@
     };
     devices.forEach((d) => {
       const entry = deviceEntry(d.udid);
-      const isPrimary =
-        !batt.phone_udid || batt.phone_udid === d.udid || devices.length === 1;
-      const hub =
-        (entry && entry.hub) || (isPrimary ? batt.phone : null);
-      pushDev(
-        (hub && hub.udid) || d.udid,
-        (hub && hub.name) || d.name,
-        (hub && hub.product_type) || d.product_type
-      );
-      const watch = (entry && entry.watch) || (isPrimary ? batt.watch : null);
-      if (watch && watch.udid) {
-        pushDev(watch.udid, watch.name, watch.product_type);
-      }
-      ((entry && entry.accessories) || []).forEach((a) => {
+      const view = deviceView(entry, d, batt);
+      pushDev(view.udid, view.name, view.productType);
+      rawAccessories(entry).forEach((a) => {
         if (a && a.udid) pushDev(a.udid, a.name, a.product_type);
       });
     });
@@ -619,15 +584,11 @@
     state = await api("/status");
     await refreshEntities();
     renderList();
+    renderFooter();
   }
 
   function collectAccessories(v) {
-    const found = [];
-    if (v && v.watch && v.watch.battery_level != null) found.push(v.watch);
-    ((v && v.accessories) || []).forEach((a) => {
-      if (a && a.battery_level != null) found.push(a);
-    });
-    return found;
+    return rawAccessories(v);
   }
 
   function udidKey(udid) {
@@ -762,15 +723,16 @@
   }
 
   function rowsFromVerify(v, deviceMeta) {
-    const hub = v && v.hub;
+    const view = deviceView(v, deviceMeta, {});
     const rows = [];
-    if (hub) {
-      const name = hub.name || deviceMeta?.name || "Device";
-      const pt = hub.product_type || deviceMeta?.product_type || "";
-      const udid = deviceMeta?.udid || hub.udid;
+    if (view.level != null) {
+      const name = view.name || deviceMeta?.name || kindLabel(view.kind, "Device");
+      const pt = view.productType || deviceMeta?.product_type || "";
+      const udid = deviceMeta?.udid || view.udid;
       rows.push(
         ensureUniqueIds({
-          kind: "device",
+          role: "device",
+          kind: view.kind || "device",
           udid,
           name,
           title: deviceTitle(name, pt),
@@ -780,12 +742,14 @@
       );
     }
     collectAccessories(v).forEach((a) => {
+      const fallback = kindLabel(a.kind, "Accessory");
       rows.push(
         ensureUniqueIds({
-          kind: "accessory",
+          role: "accessory",
+          kind: a.kind || "accessory",
           udid: a.udid,
-          name: a.name || a.product_type || "Accessory",
-          title: deviceTitle(a.name, a.product_type, "Accessory"),
+          name: a.name || a.product_type || fallback,
+          title: deviceTitle(a.name, a.product_type, fallback),
           battery: null,
           battery_state: null,
         })
@@ -1075,17 +1039,18 @@
         back.onclick = () => { wiz.step = 3; renderWizard(); };
         return;
       }
-      const device = v.hub;
+      const view = deviceView(v, wiz.device, {});
+      const device = view.level != null ? view : null;
       const found = collectAccessories(v);
       const deviceTitleText = device
-        ? deviceTitle(device.name || wiz.device?.name, device.product_type || wiz.device?.product_type)
-        : "Device";
+        ? deviceTitle(device.name || wiz.device?.name, device.productType || wiz.device?.product_type)
+        : kindLabel(view.kind, "Device");
       const deviceVal = device
-        ? `${device.battery_level}% · ${device.battery_state || "—"}`
+        ? `${device.level}% · ${device.state || "—"}`
         : "Device not found";
       const accRows = found
         .map((a) => {
-          const t = deviceTitle(a.name, a.product_type, "Accessory");
+          const t = deviceTitle(a.name, a.product_type, kindLabel(a.kind, "Accessory"));
           const val = `${a.battery_level}% · ${a.battery_state || "—"}`;
           return `<li><span class="wiz-found">${escapeHtml(t)}</span><strong>${escapeHtml(val)}</strong></li>`;
         })
@@ -1156,11 +1121,12 @@
     }
 
     if (wiz.step === 5) {
-      const device = wiz.verify?.hub;
+      const view = deviceView(wiz.verify, wiz.device, {});
+      const device = view.level != null ? view : null;
       const found = collectAccessories(wiz.verify);
-      const deviceName = device?.name || wiz.device?.name || "Device";
+      const deviceName = device?.name || wiz.device?.name || kindLabel(view.kind, "Device");
       const deviceTitleText = device
-        ? deviceTitle(deviceName, device.product_type || wiz.device?.product_type)
+        ? deviceTitle(deviceName, device.productType || wiz.device?.product_type)
         : deviceName;
       const rows = (wiz.finish && wiz.finish.entities) || [];
 
@@ -1180,7 +1146,7 @@
       body.innerHTML = `
         ${summary}
         <p class="hint">Battery entities published to Home Assistant via MQTT.</p>
-        ${foundBlock(deviceName, device?.product_type || wiz.device?.product_type)}
+        ${foundBlock(deviceName, device?.productType || wiz.device?.product_type)}
         <p class="hint">${escapeHtml(wiz.host || "")}</p>
         ${blocks}`;
       back.classList.add("hidden");
@@ -1240,7 +1206,7 @@
         }),
       });
     } catch (e) {
-      wiz.verify = { hub: null, watch: null, error: String(e.message || e) };
+      wiz.verify = { battery_level: null, accessories: [], error: String(e.message || e) };
     }
     renderWizard();
   }

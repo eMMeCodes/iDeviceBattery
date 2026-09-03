@@ -104,6 +104,14 @@ if [ -d /share/idevice_lockdown_backup ] && [ -z "$(ls -A /data/lockdown 2>/dev/
   echo "[migrate] lockdown restored from /share/idevice_lockdown_backup"
 fi
 
+python3 - <<'PY' || true
+from rsd_battery import restore_remote_pair_records, backup_remote_pair_records
+n = restore_remote_pair_records()
+print(f"[migrate] remote pairing restored={n}", flush=True)
+n2 = backup_remote_pair_records()
+print(f"[migrate] remote pairing backed up={n2}", flush=True)
+PY
+
 # Seed devices.json from legacy options if needed
 python3 - <<'PY'
 from devices_store import load_store

@@ -31,12 +31,12 @@ That stack rides **Apple usbmuxd**. There is no public Apple usbmuxd for Linux.
 ```
 HA add-on (host_network)
   │
-  ├─ Phone battery
-  │    TCP phone:62078 + /data/lockdown/<UDID>.plist
+  ├─ Hub battery (iPhone / iPad)
+  │    TCP hub:62078 + /data/lockdown/<UDID>.plist
   │    → create_using_tcp → domain com.apple.mobile.battery
   │
-  └─ Watch battery
-       Bonjour RemotePairing service for UDID
+  └─ Accessory battery (Watch, …)
+       Bonjour RemotePairing service for hub UDID
        → userspace CDTunnel (pymobiledevice3)
        → RemoteServiceDiscovery (RSD)
        → CompanionProxyService

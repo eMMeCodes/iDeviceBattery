@@ -1,11 +1,20 @@
 # Troubleshooting
 
+## Device vs accessories (important)
+
+| Target | Path | Unlock required? |
+|--------|------|------------------|
+| **iPhone / iPad battery** | Wi‑Fi lockdown TCP `:62078` + Trust plist | **No** if the device is **awake on Wi‑Fi** (screen can be locked). Deep sleep closes `:62078`. |
+| **Watch / AirPods / …** | RemotePairing → RSD → `companion_proxy` | Hub must be **reachable on Bonjour**; deep sleep often blocks RemotePairing. |
+
+RemotePairing RSD reads **accessories through the hub** — not the hub’s own battery.
+
 ## Card / sensors show old values
 
 1. Confirm `/share/idevice_battery.json` `ts` is recent
-2. Unlock the iPhone — sleep often drops Bonjour + `:62078`
-3. Wait one add-on poll (`poll_minutes`, default 3) plus one HA `scan_interval` (60)
-4. Check `error` in the JSON
+2. Wake the device on Wi‑Fi — sleep drops Bonjour + `:62078`
+3. Wait one add-on poll (`poll_minutes`, default 3)
+4. Check per-device `stale` and `error` in the JSON (`hub_stale` is a legacy alias)
 
 ## Phone battery OK, Watch missing
 
@@ -15,7 +24,7 @@
 | `no paired watches in companion registry` | Watch not paired to this iPhone |
 | Tunnel / RSD errors | Transient Wi-Fi; retry next poll |
 
-Re-pair RemotePairing over USB if the remote plist is gone.
+If `remote_<UDID>.plist` is missing, connect the hub by USB and run **+ Add** again.
 
 ## State stuck on `Not Charging` while plugged in
 
@@ -52,5 +61,19 @@ ha apps logs local_idevice_battery
 cat /share/idevice_battery.json
 ```
 
-Useful log markers: `PHONE_OK`, `PHONE_FAIL`, `REMOTEPAIRING`, `TUNNEL_OK`, `RSD_OK`,
-`WATCH_OK`, `COMPANION_FAIL`, `ACCESSORY_OK`.
+Useful log markers: `DEVICE_OK`, `DEVICE_FAIL`, `ACCESSORY_OK`, `ACCESSORY_FAIL`,
+`REMOTEPAIRING`, `TUNNEL_OK`, `RSD_OK`, `[mqtt] skip stale device`.
+Older logs used `HUB_*` / `PHONE_*` (same meaning).
+
+### Web UI shows old battery / wrong “Charging”
+
+If logs repeat `DEVICE_FAIL TimeoutError` the add-on keeps **last-known** device values.
+From 0.9.7 the card shows **Stale** (not “Online”) and **Last updated** uses the
+timestamp of the last successful device read, not the background poll clock.
+
+Unlock the device, keep it on Wi‑Fi, tap **↻**. A successful read logs `DEVICE_OK`.
+
+“Charging” with the cable unplugged is often **stale** data from when
+`ExternalConnected` was true; refresh after `DEVICE_OK` to clear it.
+
+Useful accessory markers: `ACCESSORY_OK`, `ACCESSORY_FAIL`.

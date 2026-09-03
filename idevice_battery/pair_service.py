@@ -200,8 +200,21 @@ def _remotepair(udid: str) -> None:
         low = err.lower()
         if "already" in low or "exist" in low:
             print(f"[pair] remotepairing already present: {err}", flush=True)
+            try:
+                from rsd_battery import backup_remote_pair_records
+
+                backup_remote_pair_records()
+            except Exception:
+                pass
             return
         raise RuntimeError(err)
+    try:
+        from rsd_battery import backup_remote_pair_records
+
+        n = backup_remote_pair_records()
+        print(f"[pair] remote pairing backed up={n}", flush=True)
+    except Exception as e:
+        print(f"[pair] remote backup skipped: {e}", flush=True)
 
 
 def _enable_wifi_connections(udid: str) -> None:
@@ -621,18 +634,14 @@ def finish_pair(host: str, name: Optional[str] = None) -> dict[str, Any]:
     store = upsert_device(entry)
     # Immediate poll + MQTT discovery so HA entities exist after Finish
     result = verify_device(entry["udid"], entry["host"])
-    mqtt_entry = {
-        **entry,
-        "hub": result.get("hub"),
-        "watch": result.get("watch"),
-        "accessories": result.get("accessories") or [],
-        "error": result.get("error"),
-        "accessory_note": result.get("accessory_note"),
-    }
+    mqtt_entry = dict(result)
+    mqtt_entry["host"] = entry["host"]
+    mqtt_entry["udid"] = entry["udid"]
     try:
         from pathlib import Path
         import json as _json
         from datetime import datetime, timezone
+        from model import empty_device_entry, snapshot_root
 
         out = Path(os.environ.get("IDEVICE_BATTERY_JSON", "/share/idevice_battery.json"))
         prev: dict[str, Any] = {}
@@ -650,16 +659,14 @@ def finish_pair(host: str, name: Optional[str] = None) -> dict[str, Any]:
                     (e for e in (prev.get("devices") or []) if e.get("udid") == d.get("udid")),
                     None,
                 )
-                devices_out.append(old or {**d, "hub": None, "watch": None, "accessories": []})
+                devices_out.append(old or empty_device_entry(d))
         doc = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "path": "remotepairing-userspace-rsd",
             "devices": devices_out,
-            "phone_udid": devices_out[0]["udid"] if devices_out else entry["udid"],
-            "phone": devices_out[0].get("hub") if devices_out else mqtt_entry.get("hub"),
-            "watch": devices_out[0].get("watch") if devices_out else mqtt_entry.get("watch"),
             "error": mqtt_entry.get("error"),
         }
+        doc.update(snapshot_root(devices_out, prev))
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(".tmp")
         tmp.write_text(_json.dumps(doc, indent=2, default=str))
@@ -685,45 +692,9 @@ def finish_pair(host: str, name: Optional[str] = None) -> dict[str, Any]:
 
 def verify_device(udid: str, host: str) -> dict[str, Any]:
     """One-shot poll for wizard Verify step."""
-    os.environ["IDEVICE_UDID"] = udid
-    os.environ["IDEVICE_HOST"] = host
-    # Import fresh-ish helpers from poller
     import rsd_battery as rb
 
     rb.UDID = udid
     rb.HOST = host
-
-    async def _run() -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "hub": None,
-            "watch": None,
-            "accessories": [],
-            "error": None,
-            "accessory_note": None,
-        }
-        errors: list[str] = []
-        try:
-            rec = rb.load_pair_record(udid)
-            result["hub"] = await rb._phone_battery(rec, host=host, udid=udid)
-        except Exception as e:
-            errors.append(f"hub: {e}")
-        try:
-            comp = await rb._companion_via_remotepairing(host=host, udid=udid)
-            result["watch"] = comp.get("watch")
-            result["accessories"] = comp.get("accessories") or []
-            if comp.get("error") and not result["watch"] and not result["accessories"]:
-                errors.append(f"accessories: {comp['error']}")
-        except Exception as e:
-            errors.append(f"accessories: {e}")
-
-        hub_ok = result.get("hub") and result["hub"].get("battery_level") is not None
-        if errors:
-            if not hub_ok:
-                result["error"] = "; ".join(errors)
-            else:
-                result["accessory_note"] = "; ".join(
-                    e for e in errors if e.startswith("accessories:")
-                ) or None
-        return result
-
-    return asyncio.run(_run())
+    dev = {"udid": udid, "host": host}
+    return asyncio.run(rb.fetch_device(dev, {}))

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Phone + Watch over Wi-Fi (AirBattery-equivalent values on Linux).
+"""Device + accessory battery over Wi-Fi (AirBattery-equivalent values on Linux).
 
-Phone: lockdown TCP :62078 + pair record → com.apple.mobile.battery
-Watch: RemotePairing → userspace CDTunnel → RSD → companion_proxy
+Device (iPhone / iPad): lockdown TCP :62078 + pair record → com.apple.mobile.battery
+Accessory (Watch, AirPods, …): RemotePairing → userspace CDTunnel → RSD → CompanionProxy
 
-Reads paired hubs from /data/devices.json (see devices_store.py).
-Keeps top-level phone/watch fields for the primary hub (HA sensors).
+Reads paired devices from /data/devices.json (see devices_store.py).
+Keeps top-level phone/watch fields for the primary device (legacy HA sensors).
 """
 from __future__ import annotations
 
@@ -20,10 +20,19 @@ from pathlib import Path
 from typing import Any, cast
 
 from devices_store import load_store, primary_device, save_store
+from model import (
+    accessories_from_entry,
+    apply_legacy_aliases,
+    classify_kind,
+    mark_accessories_stale,
+    normalize_accessory,
+    snapshot_root,
+)
 
 OUT = Path(os.environ.get("IDEVICE_BATTERY_JSON", "/share/idevice_battery.json"))
 LOCKDOWN_DIR = Path(os.environ.get("IDEVICE_LOCKDOWN", "/var/lib/lockdown"))
 DEFAULT_MTU = int(os.environ.get("IDEVICE_CDTUNNEL_MTU", "16000"))
+LOCKDOWN_TIMEOUT = float(os.environ.get("IDEVICE_LOCKDOWN_TIMEOUT", "20"))
 
 # Mutable for verify/wizard one-shots
 UDID = os.environ.get("IDEVICE_UDID", "").strip()
@@ -64,10 +73,67 @@ def _load_prev() -> dict[str, Any]:
     return {}
 
 
-async def _phone_battery(rec: dict[str, Any], host: str | None = None, udid: str | None = None) -> dict[str, Any]:
+async def _refresh_device_host(
+    dev: dict[str, Any], *, attempts: int = 2, delay: float = 0.5
+) -> bool:
+    """Resolve current Wi‑Fi IP from Bonjour; update dev['host'] when it changes."""
+    from pair_service import _host_rank, discover_wifi_host_async
+
+    host = str(dev.get("host") or "")
+    # Stored IPv4: quick Bonjour probe only (device may be asleep → keep IP)
+    if _host_rank(host) == 0 and attempts > 2:
+        attempts = 2
+    try:
+        better = await discover_wifi_host_async(str(dev["udid"]), attempts=attempts, delay=delay)
+    except Exception as e:
+        print(f"[poll] host refresh {dev['udid'][:8]}: {e}", flush=True)
+        return False
+    if not better or better == host:
+        return False
+    print(f"[poll] host {host!r} → {better!r} for {dev['udid'][:8]}", flush=True)
+    dev["host"] = better
+    try:
+        store = load_store()
+        changed = False
+        for d in store.get("devices") or []:
+            if d.get("udid") == dev.get("udid"):
+                d["host"] = better
+                changed = True
+        if changed:
+            save_store(store)
+    except Exception:
+        pass
+    return True
+
+
+async def _device_battery_live(
+    rec: dict[str, Any], host: str, udid: str, dev: dict[str, Any]
+) -> dict[str, Any]:
+    """Lockdown device read with Bonjour host refresh + one retry on timeout."""
+    last_err: Exception | None = None
+    use_host = host
+    for attempt in range(2):
+        try:
+            return await asyncio.wait_for(
+                _device_battery(rec, host=use_host, udid=udid),
+                timeout=LOCKDOWN_TIMEOUT,
+            )
+        except Exception as e:
+            last_err = e
+            if attempt == 0 and isinstance(e, (asyncio.TimeoutError, TimeoutError, OSError)):
+                if await _refresh_device_host(dev, attempts=3, delay=1.0):
+                    use_host = str(dev["host"])
+                    print(f"[poll] retry lockdown {udid[:8]} @ {use_host}", flush=True)
+                    continue
+            break
+    assert last_err is not None
+    raise last_err
+
+
+async def _device_battery(rec: dict[str, Any], host: str | None = None, udid: str | None = None) -> dict[str, Any]:
     from pymobiledevice3.lockdown import create_using_tcp
 
-    phone_ld = await create_using_tcp(
+    ld = await create_using_tcp(
         hostname=host or HOST,
         identifier=udid or UDID,
         autopair=False,
@@ -76,7 +142,7 @@ async def _phone_battery(rec: dict[str, Any], host: str | None = None, udid: str
         keep_alive=True,
     )
     try:
-        batt = await phone_ld.get_value(domain="com.apple.mobile.battery")
+        batt = await ld.get_value(domain="com.apple.mobile.battery")
         pct = batt.get("BatteryCurrentCapacity")
         full = bool(batt.get("FullyCharged"))
         charging = bool(batt.get("BatteryIsCharging"))
@@ -87,9 +153,11 @@ async def _phone_battery(rec: dict[str, Any], host: str | None = None, udid: str
             state = "charging"
         else:
             state = "Not Charging"
-        name = await phone_ld.get_value(key="DeviceName")
-        product = await phone_ld.get_value(key="ProductType")
+        name = await ld.get_value(key="DeviceName")
+        product = await ld.get_value(key="ProductType")
         return {
+            "role": "device",
+            "kind": classify_kind(product, udid or UDID),
             "battery_level": int(pct) if pct is not None else None,
             "battery_state": state,
             "name": name,
@@ -97,7 +165,7 @@ async def _phone_battery(rec: dict[str, Any], host: str | None = None, udid: str
             "raw": batt,
         }
     finally:
-        await phone_ld.close()
+        await ld.close()
 
 
 async def _fetch_companion_device(
@@ -131,13 +199,15 @@ async def _fetch_companion_device(
 
     plugged = bool(is_charging)
     state = "charging" if plugged else "Not Charging"
-    return {
-        "udid": device_udid,
-        "name": name,
-        "product_type": product,
-        "battery_level": level,
-        "battery_state": state,
-    }
+    return normalize_accessory(
+        {
+            "udid": device_udid,
+            "name": name,
+            "product_type": product,
+            "battery_level": level,
+            "battery_state": state,
+        }
+    )
 
 
 def _companion_item_udid(item: Any) -> str:
@@ -146,34 +216,160 @@ def _companion_item_udid(item: Any) -> str:
     return str(item)
 
 
-def _is_watch_device(info: dict[str, Any]) -> bool:
-    product = str(info.get("product_type") or "")
-    udid = str(info.get("udid") or "")
-    if product.startswith("Watch"):
-        return True
-    return udid.startswith("00008310")
+HOME_DIR = Path(os.environ.get("HOME", "/data"))
+REMOTE_DIR = HOME_DIR / ".pymobiledevice3"
+REMOTE_BACKUP = Path("/share/idevice_remotepairing_backup")
 
 
-async def _companion_via_remotepairing(
+def remote_pair_path(udid: str) -> Path:
+    return REMOTE_DIR / f"remote_{udid}.plist"
+
+
+def has_remote_pair_record(udid: str) -> bool:
+    return remote_pair_path(udid).is_file()
+
+
+def backup_remote_pair_records() -> int:
+    """Copy remote_*.plist to share so reinstalls keep Watch path."""
+    REMOTE_BACKUP.mkdir(parents=True, exist_ok=True)
+    n = 0
+    if not REMOTE_DIR.is_dir():
+        return 0
+    for p in REMOTE_DIR.glob("remote_*.plist"):
+        try:
+            dest = REMOTE_BACKUP / p.name
+            dest.write_bytes(p.read_bytes())
+            n += 1
+        except Exception as e:
+            print(f"[migrate] remote backup {p.name}: {e}", flush=True)
+    return n
+
+
+def restore_remote_pair_records() -> int:
+    """Restore remote_*.plist from share if missing in /data."""
+    if not REMOTE_BACKUP.is_dir():
+        return 0
+    REMOTE_DIR.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for p in REMOTE_BACKUP.glob("remote_*.plist"):
+        dest = REMOTE_DIR / p.name
+        if dest.exists():
+            continue
+        try:
+            dest.write_bytes(p.read_bytes())
+            n += 1
+        except Exception as e:
+            print(f"[migrate] remote restore {p.name}: {e}", flush=True)
+    return n
+
+
+async def diagnose_companion_async(udid: str, host: str | None = None) -> dict[str, Any]:
+    """Remote plist + Bonjour browse status (safe inside the poll event loop)."""
+    diag: dict[str, Any] = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "udid": udid,
+        "host": host,
+        "home": str(HOME_DIR),
+        "remote_plist": str(remote_pair_path(udid)),
+        "remote_plist_exists": has_remote_pair_record(udid),
+        "remote_files": [],
+        "bonjour_services": 0,
+        "bonjour_hosts": [],
+        "error": None,
+    }
+    try:
+        if REMOTE_DIR.is_dir():
+            diag["remote_files"] = sorted(p.name for p in REMOTE_DIR.glob("remote_*.plist"))
+    except Exception as e:
+        diag["remote_list_error"] = str(e)
+
+    try:
+        from pymobiledevice3.bonjour import browse_remotepairing
+
+        answers = await browse_remotepairing()
+        diag["bonjour_services"] = len(answers or [])
+        hosts = []
+        for a in answers or []:
+            addrs = []
+            for address in getattr(a, "addresses", None) or []:
+                ip = getattr(address, "ip", None) or getattr(address, "full_ip", None)
+                if ip:
+                    addrs.append(str(ip))
+            hosts.append(
+                {
+                    "port": getattr(a, "port", None),
+                    "host": str(getattr(a, "host", "") or ""),
+                    "addresses": addrs[:6],
+                }
+            )
+        diag["bonjour_hosts"] = hosts
+    except Exception as e:
+        diag["error"] = f"{type(e).__name__}: {e}"
+
+    try:
+        Path("/share/idevice_diag.json").write_text(json.dumps(diag, indent=2, default=str))
+    except Exception:
+        pass
+    print(
+        f"[diag] remote_plist={diag['remote_plist_exists']} "
+        f"files={diag['remote_files']} bonjour={diag['bonjour_services']}",
+        flush=True,
+    )
+    return diag
+
+
+async def _browse_remotepairing_services(udid: str, attempts: int = 4, delay: float = 1.2):
+    """Retry Bonjour browse — RemotePairing often appears a few seconds after wake."""
+    from pymobiledevice3.remote.tunnel_service import get_remote_pairing_tunnel_services
+
+    if not has_remote_pair_record(udid):
+        print(
+            f"REMOTE_PAIR_MISSING {udid[:8]}… "
+            f"expected {remote_pair_path(udid)} — USB: + Add wizard (RemotePairing)",
+            flush=True,
+        )
+        return []
+
+    last: list[Any] = []
+    for i in range(max(1, attempts)):
+        try:
+            last = list(await get_remote_pairing_tunnel_services(udid=udid) or [])
+        except Exception as e:
+            print(f"REMOTEPAIRING browse {i + 1}/{attempts}: {e}", flush=True)
+            last = []
+        if last:
+            return last
+        if i + 1 < attempts:
+            await asyncio.sleep(delay)
+    return last
+
+
+async def _accessories_via_remotepairing(
     host: str | None = None, udid: str | None = None
 ) -> dict[str, Any]:
-    """List all companion devices (Watch, AirPods, …) exposed by the hub."""
+    """List accessories (Watch, AirPods, …) exposed by a paired device via CompanionProxy."""
     from pymobiledevice3.remote import tunnel_service
     from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
-    from pymobiledevice3.remote.tunnel_service import get_remote_pairing_tunnel_services
     from pymobiledevice3.remote.userspace_tunnel import UserspaceDialPlane, UserspaceTun
     from pymobiledevice3.services.companion import CompanionProxyService
 
     use_udid = udid or UDID
     use_host = host or HOST
-    result: dict[str, Any] = {"watch": None, "accessories": [], "error": None}
+    result: dict[str, Any] = {"accessories": [], "error": None}
 
     tunnel_service.USE_USERSPACE_TUNNEL = True
     tunnel_service.RemotePairingTcpTunnel.REQUESTED_MTU = DEFAULT_MTU
     stack = AsyncExitStack()
     try:
-        services = await get_remote_pairing_tunnel_services(udid=use_udid)
+        if not has_remote_pair_record(use_udid):
+            await diagnose_companion_async(use_udid, use_host)
+            raise RuntimeError(
+                "RemotePairing record missing — connect the device by USB and run + Add. "
+                "Lockdown Trust alone is not enough for accessories."
+            )
+        services = await _browse_remotepairing_services(use_udid)
         if not services:
+            await diagnose_companion_async(use_udid, use_host)
             raise RuntimeError(
                 "no RemotePairing on Bonjour; unlock the device and keep Wi‑Fi on"
             )
@@ -210,7 +406,6 @@ async def _companion_via_remotepairing(
             result["error"] = "no accessories on the last scan"
             return result
 
-        watch: dict[str, Any] | None = None
         accessories: list[dict[str, Any]] = []
         for item in listed:
             dev_udid = _companion_item_udid(item)
@@ -218,24 +413,22 @@ async def _companion_via_remotepairing(
             if not info:
                 continue
             if info.get("battery_level") is None:
-                print(f"COMPANION_SKIP {dev_udid[:8]} no battery", flush=True)
+                print(f"ACCESSORY_SKIP {dev_udid[:8]} no battery", flush=True)
                 continue
-            if _is_watch_device(info) and watch is None:
-                watch = info
-                print(
-                    f"WATCH_OK {info['battery_level']}% {info['battery_state']}",
-                    flush=True,
-                )
-            else:
-                accessories.append(info)
-                print(
-                    f"ACCESSORY_OK {info.get('name')} {info['battery_level']}%",
-                    flush=True,
-                )
+            accessories.append(info)
+            print(
+                f"ACCESSORY_OK {info.get('kind')} {info.get('name')} "
+                f"{info['battery_level']}% {info.get('battery_state')}",
+                flush=True,
+            )
+            if info.get("kind") == "watch":
+                try:
+                    backup_remote_pair_records()
+                except Exception:
+                    pass
 
-        result["watch"] = watch
         result["accessories"] = accessories
-        if not watch and not accessories:
+        if not accessories:
             result["error"] = "no accessories on the last scan"
         return result
     finally:
@@ -243,29 +436,55 @@ async def _companion_via_remotepairing(
         tunnel_service.USE_USERSPACE_TUNNEL = False
 
 
-async def fetch_hub(dev: dict[str, Any], prev_entry: dict[str, Any] | None = None) -> dict[str, Any]:
+async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = None) -> dict[str, Any]:
     global UDID, HOST
     udid = dev["udid"]
     host = dev["host"]
     UDID, HOST = udid, host
     prev_entry = prev_entry or {}
+    prev_hub = prev_entry.get("hub") or prev_entry.get("phone") or {}
+    prev_level = prev_entry.get("battery_level")
+    if prev_level is None:
+        prev_level = prev_hub.get("battery_level")
+    prev_state = prev_entry.get("battery_state")
+    if prev_state is None:
+        prev_state = prev_hub.get("battery_state")
+    prev_stale = prev_entry.get("stale")
+    if prev_stale is None:
+        prev_stale = bool(prev_entry.get("hub_stale"))
+    prev_acc = accessories_from_entry(prev_entry)
+    name = dev.get("name") or prev_entry.get("name") or prev_hub.get("name")
+    product = dev.get("product_type") or prev_entry.get("product_type") or prev_hub.get("product_type")
     entry: dict[str, Any] = {
         "udid": udid,
         "host": host,
-        "name": dev.get("name"),
-        "product_type": dev.get("product_type"),
-        "hub": prev_entry.get("hub") or prev_entry.get("phone"),
-        "watch": prev_entry.get("watch"),
-        "accessories": prev_entry.get("accessories") or [],
+        "name": name,
+        "product_type": product,
+        "role": "device",
+        "kind": classify_kind(product, udid),
+        "battery_level": prev_level,
+        "battery_state": prev_state,
+        "raw": prev_entry.get("raw") if "raw" in prev_entry else prev_hub.get("raw"),
+        "stale": bool(prev_stale),
+        "updated_at": prev_entry.get("updated_at") or prev_entry.get("hub_updated_at"),
+        "accessories": prev_acc,
         "error": None,
+        "accessories_error": None,
     }
     errors: list[str] = []
+    device_ok = False
     try:
         rec = load_pair_record(udid)
-        entry["hub"] = await _phone_battery(rec, host=host, udid=udid)
-        # refresh friendly name
-        entry["name"] = entry["hub"].get("name") or entry["name"]
-        entry["product_type"] = entry["hub"].get("product_type") or entry["product_type"]
+        live = await _device_battery_live(rec, host=host, udid=udid, dev=dev)
+        device_ok = True
+        entry["battery_level"] = live.get("battery_level")
+        entry["battery_state"] = live.get("battery_state")
+        entry["raw"] = live.get("raw")
+        entry["name"] = live.get("name") or entry["name"]
+        entry["product_type"] = live.get("product_type") or entry["product_type"]
+        entry["kind"] = classify_kind(entry["product_type"], udid)
+        entry["stale"] = False
+        entry["updated_at"] = datetime.now(timezone.utc).isoformat()
         try:
             from devices_store import load_store, save_store
 
@@ -284,64 +503,64 @@ async def fetch_hub(dev: dict[str, Any], prev_entry: dict[str, Any] | None = Non
         except Exception:
             pass
         print(
-            f"PHONE_OK {udid[:8]}… {entry['hub']['battery_level']}% {entry['hub']['battery_state']}",
+            f"DEVICE_OK {entry['kind']} {udid[:8]}… "
+            f"{entry['battery_level']}% {entry['battery_state']}",
             flush=True,
         )
     except Exception as e:
-        errors.append(f"hub: {type(e).__name__}: {e}")
-        print(f"PHONE_FAIL {type(e).__name__}: {e}", flush=True)
+        errors.append(f"device: {type(e).__name__}: {e}")
+        print(f"DEVICE_FAIL {type(e).__name__}: {e}", flush=True)
+        if prev_level is not None:
+            entry["stale"] = True
+        else:
+            entry["battery_level"] = None
+            entry["stale"] = False
 
+    accessories_ok = False
     try:
-        comp = await _companion_via_remotepairing(host=host, udid=udid)
-        if comp.get("watch"):
-            entry["watch"] = comp["watch"]
-        if comp.get("accessories"):
-            entry["accessories"] = comp["accessories"]
-        if comp.get("error") and not comp.get("watch") and not comp.get("accessories"):
-            errors.append(f"accessories: {comp['error']}")
-            print(f"COMPANION_FAIL {comp['error']}", flush=True)
-        elif comp.get("error"):
-            # Hub reachable; accessories partial — keep data, soft note only
-            print(f"COMPANION_NOTE {comp['error']}", flush=True)
+        scan = await _accessories_via_remotepairing(host=host, udid=udid)
+        found = scan.get("accessories") or []
+        if found:
+            ts = datetime.now(timezone.utc).isoformat()
+            entry["accessories"] = [
+                {**a, "stale": False, "updated_at": ts} for a in found
+            ]
+            accessories_ok = True
+        if scan.get("error") and not found:
+            errors.append(f"accessories: {scan['error']}")
+            print(f"ACCESSORY_FAIL {scan['error']}", flush=True)
+        elif scan.get("error"):
+            print(f"ACCESSORY_NOTE {scan['error']}", flush=True)
     except Exception as e:
         errors.append(f"accessories: {type(e).__name__}: {e}")
-        print(f"COMPANION_FAIL {type(e).__name__}: {e}", flush=True)
+        print(f"ACCESSORY_FAIL {type(e).__name__}: {e}", flush=True)
 
-    # Hub reachability drives card status; accessory issues are non-fatal
+    if not accessories_ok:
+        entry["accessories"] = mark_accessories_stale(prev_acc)
+
     if errors:
-        hub_failed = not (entry.get("hub") and entry["hub"].get("battery_level") is not None)
-        if hub_failed:
+        if not device_ok:
             entry["error"] = "; ".join(errors)
         else:
-            entry["accessory_note"] = "; ".join(
+            entry["accessories_error"] = "; ".join(
                 e for e in errors if e.startswith("accessories:")
             ) or None
+    apply_legacy_aliases(entry)
     return entry
+
+
+# Back-compat for older call sites
+fetch_hub = fetch_device
 
 
 async def fetch_once() -> dict[str, Any]:
     store = load_store()
-    devices = store.get("devices") or []
-    # Upgrade link-local / unusable hosts to a real Bonjour Wi‑Fi address (IPv4 preferred)
-    try:
-        from pair_service import _host_rank, wifi_host_from_bonjour_async
-
-        changed = False
-        for dev in devices:
-            host = str(dev.get("host") or "")
-            rank = _host_rank(host)
-            # Already plain IPv4 — keep. Upgrade fe80 / .local / IPv6 if Bonjour has better.
-            if rank == 0:
-                continue
-            better = await wifi_host_from_bonjour_async(str(dev["udid"]))
-            if better and _host_rank(better) < rank:
-                print(f"[poll] host {host!r} → {better!r} for {dev['udid'][:8]}", flush=True)
-                dev["host"] = better
-                changed = True
-        if changed:
-            save_store(store)
-    except Exception as e:
-        print(f"[poll] wifi_host refresh skipped: {e}", flush=True)
+    devices = list(store.get("devices") or [])
+    # Refresh Wi‑Fi IPs from Bonjour before each poll (parallel; keep stored IPv4 if asleep)
+    if devices:
+        await asyncio.gather(
+            *[_refresh_device_host(dev, attempts=2, delay=0.5) for dev in devices]
+        )
 
     prev = _load_prev()
     prev_by = {d.get("udid"): d for d in (prev.get("devices") or []) if d.get("udid")}
@@ -373,19 +592,15 @@ async def fetch_once() -> dict[str, Any]:
             return doc
 
     errors: list[str] = []
-    for dev in devices:
-        entry = await fetch_hub(dev, prev_by.get(dev["udid"]))
+    entries = await asyncio.gather(
+        *[fetch_device(dev, prev_by.get(dev["udid"])) for dev in devices]
+    )
+    for dev, entry in zip(devices, entries):
         doc["devices"].append(entry)
         if entry.get("error"):
             errors.append(f"{dev['udid'][:8]}: {entry['error']}")
 
-    # Primary hub → legacy phone/watch keys for existing HA sensors
-    primary = doc["devices"][0]
-    doc["phone_udid"] = primary.get("udid")
-    if primary.get("hub"):
-        doc["phone"] = primary["hub"]
-    if primary.get("watch"):
-        doc["watch"] = primary["watch"]
+    doc.update(snapshot_root(doc["devices"], prev))
     if errors:
         doc["error"] = "; ".join(errors)
     return doc

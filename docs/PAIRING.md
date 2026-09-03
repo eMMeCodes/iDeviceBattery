@@ -51,11 +51,8 @@ Record lands in:
 /data/.pymobiledevice3/remote_<UDID>.plist
 ```
 
-Without this file, Watch polls fail with:
-
-```text
-no RemotePairing on Bonjour; USB once: pymobiledevice3 lockdown remotepairing --pair
-```
+Without this file, Watch polls fail with `RemotePairing record missing`.
+The **+ Add** wizard creates the record over USB (`lockdown remotepairing --pair`).
 
 ## 5. Enable Wi-Fi lockdown (optional, best-effort)
 

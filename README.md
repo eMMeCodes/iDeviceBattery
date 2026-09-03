@@ -1,13 +1,13 @@
 # iDevice Battery for Home Assistant
 
-Pair **iPhone / iPad** over USB once, then poll battery (hub + accessories) over
+Pair **iPhone / iPad** over USB once, then poll battery (device + accessories) over
 Wi‑Fi and publish **MQTT discovery** sensors to Home Assistant.
 
 No Home Assistant Companion app is required for Watch or other accessories.
 
 | Device | How data is obtained |
 |--------|----------------------|
-| iPhone / iPad (hub) | Wi-Fi lockdown (`:62078`) + Trust pair record → `com.apple.mobile.battery` |
+| iPhone / iPad (device) | Wi-Fi lockdown (`:62078`) + Trust pair record → `com.apple.mobile.battery` |
 | Accessories (Watch, headphones, …) | **RemotePairing** (USB once) → userspace CDTunnel → RSD → `companion_proxy` |
 
 Accessories appear only if the hub exposes them. A device with no accessories
@@ -19,7 +19,7 @@ is a normal, valid state.
 ## Repository layout
 
 ```
-addon/                      Home Assistant local add-on (copy to /addons/idevice_pair/)
+idevice_battery/            Home Assistant add-on (copy to /addons/idevice_battery/)
 docs/                       Architecture, pairing, troubleshooting
 homeassistant/
   packages/                 optional command_line fallback (MQTT discovery is primary)
@@ -40,7 +40,8 @@ homeassistant/
 ### 1. Install the add-on
 
 ```bash
-cp -a addon /addons/idevice_pair
+cp -a idevice_battery /addons/idevice_battery
+# Local build: remove the `image:` line from /addons/idevice_battery/config.yaml
 ```
 
 Then: **Settings → Add-ons → Add-on store → ⋮ → Check for updates → iDevice Battery → Install**.
