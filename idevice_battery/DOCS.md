@@ -1,8 +1,8 @@
 # Home Assistant App: iDevice Battery
 
-Pair an **iPhone** or **iPad** over USB once, then poll battery over Wi‑Fi and
-publish MQTT sensors to Home Assistant. Accessories (Apple Watch, AirPods, …)
-are read through the paired device. The Home Assistant Companion app is not used.
+Pair an iPhone or iPad over USB once, then poll battery over Wi‑Fi and publish MQTT sensors to Home Assistant.
+Accessories (Watch, AirPods, …) are read through the paired device.
+The Home Assistant Companion app is not used.
 
 This app is **experimental**.
 
