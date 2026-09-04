@@ -573,8 +573,6 @@ def run_pair_job(udid: Optional[str] = None) -> None:
         )
         host = discover_wifi_host(info["udid"])
         info["wifi_host"] = host
-        # Back-compat for older UI overlays still reading host_guess
-        info["host_guess"] = host
         _set_job(
             state="ok",
             phase="ready",
@@ -641,7 +639,7 @@ def finish_pair(host: str, name: Optional[str] = None) -> dict[str, Any]:
         from pathlib import Path
         import json as _json
         from datetime import datetime, timezone
-        from model import empty_device_entry, snapshot_root
+        from model import empty_device_entry
 
         out = Path(os.environ.get("IDEVICE_BATTERY_JSON", "/share/idevice_battery.json"))
         prev: dict[str, Any] = {}
@@ -666,7 +664,6 @@ def finish_pair(host: str, name: Optional[str] = None) -> dict[str, Any]:
             "devices": devices_out,
             "error": mqtt_entry.get("error"),
         }
-        doc.update(snapshot_root(devices_out, prev))
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(".tmp")
         tmp.write_text(_json.dumps(doc, indent=2, default=str))

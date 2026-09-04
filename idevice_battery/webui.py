@@ -21,11 +21,6 @@ from pair_service import (
 )
 
 def _resolve_www() -> Path:
-    overlay = Path("/share/idevice_ui")
-    env_on = os.environ.get("IDEVICE_UI_OVERLAY", "").strip() in ("1", "true", "yes")
-    flag = (overlay / ".enable").is_file()
-    if (env_on or flag) and (overlay / "app.js").is_file():
-        return overlay
     return Path(os.environ.get("IDEVICE_WWW", "/www"))
 
 
@@ -71,12 +66,19 @@ def _force_check(udid: str) -> dict[str, Any]:
         {},
     )
     entry = asyncio.run(rb.fetch_device(dev, prev_entry))
-    from model import empty_device_entry, snapshot_root
+    from model import empty_device_entry
+    from devices_store import registered_udids
 
     device_ok = entry.get("battery_level") is not None and not entry.get("stale")
 
+    still = registered_udids()
+    if udid not in still:
+        return {"result": entry, "battery": _read_battery()}
+
     ordered = []
-    for d in store.get("devices") or []:
+    for d in load_store().get("devices") or []:
+        if d.get("udid") not in still:
+            continue
         if d.get("udid") == udid:
             ordered.append(entry)
         else:
@@ -92,7 +94,6 @@ def _force_check(udid: str) -> dict[str, Any]:
         "devices": ordered,
         "error": entry.get("error") if not device_ok else None,
     }
-    doc.update(snapshot_root(ordered, prev))
 
     BATTERY_JSON.parent.mkdir(parents=True, exist_ok=True)
     tmp = BATTERY_JSON.with_suffix(".tmp")
@@ -115,12 +116,11 @@ def _force_discover(udid: str) -> dict[str, Any]:
     import rsd_battery as rb
     from model import (
         accessories_from_entry,
-        apply_legacy_aliases,
         device_battery,
         empty_device_entry,
         mark_accessories_stale,
-        snapshot_root,
     )
+    from devices_store import registered_udids
 
     store = load_store()
     dev = next((d for d in store.get("devices") or [] if d.get("udid") == udid), None)
@@ -168,10 +168,15 @@ def _force_discover(udid: str) -> dict[str, Any]:
         "error": prev_entry.get("error"),
         "accessories_error": accessories_error,
     }
-    apply_legacy_aliases(entry)
+
+    still = registered_udids()
+    if udid not in still:
+        return {"accessories": found, "error": scan.get("error"), "battery": _read_battery()}
 
     ordered = []
     for d in store.get("devices") or []:
+        if d.get("udid") not in still:
+            continue
         if d.get("udid") == udid:
             ordered.append(entry)
         else:
@@ -187,7 +192,6 @@ def _force_discover(udid: str) -> dict[str, Any]:
         "devices": ordered,
         "error": prev.get("error"),
     }
-    doc.update(snapshot_root(ordered, prev))
 
     BATTERY_JSON.parent.mkdir(parents=True, exist_ok=True)
     tmp = BATTERY_JSON.with_suffix(".tmp")
@@ -202,8 +206,29 @@ def _force_discover(udid: str) -> dict[str, Any]:
     return {"accessories": found, "error": scan.get("error"), "battery": doc}
 
 
+def _write_battery(doc: dict[str, Any]) -> None:
+    BATTERY_JSON.parent.mkdir(parents=True, exist_ok=True)
+    tmp = BATTERY_JSON.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc, indent=2, default=str))
+    tmp.replace(BATTERY_JSON)
+
+
+def _prune_battery_udid(udid: str) -> None:
+    """Drop a device from the JSON snapshot so an empty registry cannot be re-seeded."""
+    from datetime import datetime, timezone
+
+    batt = _read_battery()
+    batt["devices"] = [e for e in (batt.get("devices") or []) if e.get("udid") != udid]
+    for key in ("phone", "watch", "phone_udid", "hub"):
+        batt.pop(key, None)
+    batt["ts"] = datetime.now(timezone.utc).isoformat()
+    if not batt["devices"]:
+        batt["error"] = "no paired devices — open the add-on UI and tap Add"
+    _write_battery(batt)
+
+
 def _remove_paired_device(udid: str) -> dict[str, Any]:
-    """Remove from registry and clear MQTT discovery for hub + known accessories."""
+    """Remove from registry and clear MQTT discovery for device + accessories."""
     prev_entry = None
     try:
         batt = _read_battery()
@@ -214,6 +239,10 @@ def _remove_paired_device(udid: str) -> dict[str, Any]:
     except Exception:
         prev_entry = None
     store = remove_device(udid)
+    try:
+        _prune_battery_udid(udid)
+    except Exception as e:
+        print(f"[ui] prune snapshot failed: {e}", flush=True)
     try:
         from mqtt_ha import unpublish_entry
 
@@ -233,7 +262,7 @@ def _read_battery() -> dict[str, Any]:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "iDeviceBatteryUI/0.9.24"
+    server_version = "iDeviceBatteryUI/0.9.28"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"[ui] {self.address_string()} {fmt % args}", flush=True)
@@ -417,7 +446,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     WWW.mkdir(parents=True, exist_ok=True)
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"[ui] listening on http://{HOST}:{PORT} www={WWW} (overlay={WWW == Path('/share/idevice_ui')})", flush=True)
+    print(f"[ui] listening on http://{HOST}:{PORT} www={WWW}", flush=True)
     httpd.serve_forever()
 
 

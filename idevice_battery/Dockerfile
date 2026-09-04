@@ -26,10 +26,9 @@ RUN apt-get update \
     dbus \
  && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir --break-system-packages 'pymobiledevice3>=11.2.0' 'paho-mqtt>=2.0.0'
-
-ARG UI_BUILD=0.9.25
-RUN echo "ui ${UI_BUILD}" > /tmp/ui-build-id
+RUN pip3 install --no-cache-dir --break-system-packages \
+    'pymobiledevice3==11.2.3' \
+    'paho-mqtt==2.1.0'
 
 COPY config.yaml /build/config.yaml
 COPY devices_store.py pair_service.py webui.py rsd_battery.py mqtt_ha.py model.py product_map.json run.sh /

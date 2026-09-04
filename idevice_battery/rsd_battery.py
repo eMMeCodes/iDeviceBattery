@@ -5,7 +5,6 @@ Device (iPhone / iPad): lockdown TCP :62078 + pair record → com.apple.mobile.b
 Accessory (Watch, AirPods, …): RemotePairing → userspace CDTunnel → RSD → CompanionProxy
 
 Reads paired devices from /data/devices.json (see devices_store.py).
-Keeps top-level phone/watch fields for the primary device (legacy HA sensors).
 """
 from __future__ import annotations
 
@@ -19,14 +18,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from devices_store import load_store, primary_device, save_store
+from devices_store import load_store, patch_device, primary_device, registered_udids
 from model import (
     accessories_from_entry,
-    apply_legacy_aliases,
     classify_kind,
+    device_battery,
     mark_accessories_stale,
     normalize_accessory,
-    snapshot_root,
 )
 
 OUT = Path(os.environ.get("IDEVICE_BATTERY_JSON", "/share/idevice_battery.json"))
@@ -91,18 +89,9 @@ async def _refresh_device_host(
     if not better or better == host:
         return False
     print(f"[poll] host {host!r} → {better!r} for {dev['udid'][:8]}", flush=True)
+    if not patch_device(str(dev.get("udid")), host=better):
+        return False
     dev["host"] = better
-    try:
-        store = load_store()
-        changed = False
-        for d in store.get("devices") or []:
-            if d.get("udid") == dev.get("udid"):
-                d["host"] = better
-                changed = True
-        if changed:
-            save_store(store)
-    except Exception:
-        pass
     return True
 
 
@@ -147,10 +136,9 @@ async def _device_battery(rec: dict[str, Any], host: str | None = None, udid: st
         full = bool(batt.get("FullyCharged"))
         charging = bool(batt.get("BatteryIsCharging"))
         plugged = bool(batt.get("ExternalConnected"))
-        if full:
-            state = "full"
-        elif charging or plugged:
-            state = "charging"
+        # FullyCharged can stay true after unplug — only "full"/"charging" while powered
+        if charging or plugged:
+            state = "full" if full else "charging"
         else:
             state = "Not Charging"
         name = await ld.get_value(key="DeviceName")
@@ -230,7 +218,7 @@ def has_remote_pair_record(udid: str) -> bool:
 
 
 def backup_remote_pair_records() -> int:
-    """Copy remote_*.plist to share so reinstalls keep Watch path."""
+    """Copy remote_*.plist to share so reinstalls keep the accessory path."""
     REMOTE_BACKUP.mkdir(parents=True, exist_ok=True)
     n = 0
     if not REMOTE_DIR.is_dir():
@@ -306,10 +294,6 @@ async def diagnose_companion_async(udid: str, host: str | None = None) -> dict[s
     except Exception as e:
         diag["error"] = f"{type(e).__name__}: {e}"
 
-    try:
-        Path("/share/idevice_diag.json").write_text(json.dumps(diag, indent=2, default=str))
-    except Exception:
-        pass
     print(
         f"[diag] remote_plist={diag['remote_plist_exists']} "
         f"files={diag['remote_files']} bonjour={diag['bonjour_services']}",
@@ -362,11 +346,11 @@ async def _accessories_via_remotepairing(
     stack = AsyncExitStack()
     try:
         if not has_remote_pair_record(use_udid):
-            await diagnose_companion_async(use_udid, use_host)
-            raise RuntimeError(
-                "RemotePairing record missing — connect the device by USB and run + Add. "
-                "Lockdown Trust alone is not enough for accessories."
+            print(
+                f"ACCESSORY_SKIP {use_udid[:8]}… no RemotePairing record (device battery still works)",
+                flush=True,
             )
+            return result
         services = await _browse_remotepairing_services(use_udid)
         if not services:
             await diagnose_companion_async(use_udid, use_host)
@@ -403,7 +387,6 @@ async def _accessories_via_remotepairing(
         listed = await companion.list()
         print(f"COMPANION_LIST {listed}", flush=True)
         if not listed:
-            result["error"] = "no accessories on the last scan"
             return result
 
         accessories: list[dict[str, Any]] = []
@@ -428,8 +411,6 @@ async def _accessories_via_remotepairing(
                     pass
 
         result["accessories"] = accessories
-        if not accessories:
-            result["error"] = "no accessories on the last scan"
         return result
     finally:
         await stack.aclose()
@@ -438,23 +419,18 @@ async def _accessories_via_remotepairing(
 
 async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = None) -> dict[str, Any]:
     global UDID, HOST
+
     udid = dev["udid"]
     host = dev["host"]
     UDID, HOST = udid, host
     prev_entry = prev_entry or {}
-    prev_hub = prev_entry.get("hub") or prev_entry.get("phone") or {}
-    prev_level = prev_entry.get("battery_level")
-    if prev_level is None:
-        prev_level = prev_hub.get("battery_level")
-    prev_state = prev_entry.get("battery_state")
-    if prev_state is None:
-        prev_state = prev_hub.get("battery_state")
-    prev_stale = prev_entry.get("stale")
-    if prev_stale is None:
-        prev_stale = bool(prev_entry.get("hub_stale"))
+    prev = device_battery(prev_entry)
+    prev_level = prev.get("battery_level")
+    prev_state = prev.get("battery_state")
+    prev_stale = bool(prev.get("stale"))
     prev_acc = accessories_from_entry(prev_entry)
-    name = dev.get("name") or prev_entry.get("name") or prev_hub.get("name")
-    product = dev.get("product_type") or prev_entry.get("product_type") or prev_hub.get("product_type")
+    name = dev.get("name") or prev.get("name")
+    product = dev.get("product_type") or prev.get("product_type")
     entry: dict[str, Any] = {
         "udid": udid,
         "host": host,
@@ -464,9 +440,9 @@ async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = 
         "kind": classify_kind(product, udid),
         "battery_level": prev_level,
         "battery_state": prev_state,
-        "raw": prev_entry.get("raw") if "raw" in prev_entry else prev_hub.get("raw"),
-        "stale": bool(prev_stale),
-        "updated_at": prev_entry.get("updated_at") or prev_entry.get("hub_updated_at"),
+        "raw": prev.get("raw"),
+        "stale": prev_stale,
+        "updated_at": prev.get("updated_at"),
         "accessories": prev_acc,
         "error": None,
         "accessories_error": None,
@@ -486,20 +462,13 @@ async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = 
         entry["stale"] = False
         entry["updated_at"] = datetime.now(timezone.utc).isoformat()
         try:
-            from devices_store import load_store, save_store
-
-            store = load_store()
-            changed = False
-            for d in store.get("devices") or []:
-                if d.get("udid") == udid:
-                    if entry["name"] and d.get("name") != entry["name"]:
-                        d["name"] = entry["name"]
-                        changed = True
-                    if entry["product_type"] and d.get("product_type") != entry["product_type"]:
-                        d["product_type"] = entry["product_type"]
-                        changed = True
-            if changed:
-                save_store(store)
+            fields: dict[str, Any] = {}
+            if entry["name"]:
+                fields["name"] = entry["name"]
+            if entry["product_type"]:
+                fields["product_type"] = entry["product_type"]
+            if fields:
+                patch_device(udid, **fields)
         except Exception:
             pass
         print(
@@ -545,12 +514,7 @@ async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = 
             entry["accessories_error"] = "; ".join(
                 e for e in errors if e.startswith("accessories:")
             ) or None
-    apply_legacy_aliases(entry)
     return entry
-
-
-# Back-compat for older call sites
-fetch_hub = fetch_device
 
 
 async def fetch_once() -> dict[str, Any]:
@@ -565,48 +529,44 @@ async def fetch_once() -> dict[str, Any]:
     prev = _load_prev()
     prev_by = {d.get("udid"): d for d in (prev.get("devices") or []) if d.get("udid")}
 
-    # Legacy single-device prev
-    if not prev_by and prev.get("phone_udid"):
-        prev_by[prev["phone_udid"]] = {
-            "hub": prev.get("phone"),
-            "phone": prev.get("phone"),
-            "watch": prev.get("watch"),
-        }
-
     doc: dict[str, Any] = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "path": "remotepairing-userspace-rsd",
         "devices": [],
-        "phone_udid": None,
-        "phone": prev.get("phone"),
-        "watch": prev.get("watch"),
         "error": None,
     }
 
     if not devices:
-        # Fallback env (legacy)
-        if UDID and HOST:
-            devices = [{"udid": UDID, "host": HOST, "name": UDID[:8]}]
-        else:
-            doc["error"] = "no paired devices — open the add-on UI and tap Add"
-            return doc
+        doc["error"] = "no paired devices — open the add-on UI and tap Add"
+        return doc
 
     errors: list[str] = []
     entries = await asyncio.gather(
         *[fetch_device(dev, prev_by.get(dev["udid"])) for dev in devices]
     )
+    still = registered_udids()
     for dev, entry in zip(devices, entries):
+        if dev.get("udid") not in still:
+            continue
         doc["devices"].append(entry)
         if entry.get("error"):
             errors.append(f"{dev['udid'][:8]}: {entry['error']}")
 
-    doc.update(snapshot_root(doc["devices"], prev))
+    if not doc["devices"] and not still:
+        doc["error"] = "no paired devices — open the add-on UI and tap Add"
+        return doc
+
     if errors:
         doc["error"] = "; ".join(errors)
     return doc
 
 
 def _write(doc: dict[str, Any]) -> None:
+    still = registered_udids()
+    doc["devices"] = [e for e in (doc.get("devices") or []) if e.get("udid") in still]
+    if not still:
+        doc["devices"] = []
+        doc["error"] = "no paired devices — open the add-on UI and tap Add"
     OUT.parent.mkdir(parents=True, exist_ok=True)
     tmp = OUT.with_suffix(".tmp")
     tmp.write_text(json.dumps(doc, indent=2, default=str))
@@ -629,9 +589,6 @@ async def loop() -> None:
             prev = _load_prev()
             doc = {
                 "ts": datetime.now(timezone.utc).isoformat(),
-                "phone_udid": prev.get("phone_udid"),
-                "phone": prev.get("phone"),
-                "watch": prev.get("watch"),
                 "devices": prev.get("devices") or [],
                 "path": "remotepairing-userspace-rsd",
                 "error": f"{type(e).__name__}: {e}",
@@ -656,7 +613,7 @@ def main() -> int:
         doc = asyncio.run(fetch_once())
         print(json.dumps(doc, indent=2, default=str))
         _write(doc)
-        return 0 if doc.get("phone") or doc.get("devices") else 1
+        return 0 if doc.get("devices") else 1
     asyncio.run(loop())
     return 0
 

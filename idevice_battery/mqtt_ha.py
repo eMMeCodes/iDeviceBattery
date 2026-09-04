@@ -303,7 +303,13 @@ def collect_udids_from_entry(entry: dict[str, Any]) -> list[str]:
 
 def sync_entry(entry: dict[str, Any]) -> None:
     """Publish discovery + state for one device (and its accessories)."""
+    from devices_store import registered_udids
     from model import accessories_from_entry, device_battery
+
+    view = device_battery(entry)
+    device_udid = view.get("udid")
+    if not device_udid or device_udid not in registered_udids():
+        return
 
     ensure_mqtt_env_from_supervisor()
     client, cfg = _client()
@@ -367,7 +373,12 @@ def sync_entry(entry: dict[str, Any]) -> None:
 
 
 def sync_battery_doc(doc: dict[str, Any]) -> None:
+    from devices_store import registered_udids
+
+    still = registered_udids()
     for entry in doc.get("devices") or []:
+        if entry.get("udid") not in still:
+            continue
         try:
             sync_entry(entry)
         except Exception as e:

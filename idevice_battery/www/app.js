@@ -112,54 +112,41 @@
     return KIND_LABELS[kind] || fallback || kind || "Device";
   }
 
-  function deviceView(entry, storeDev, batt) {
+  function deviceView(entry, storeDev) {
     const d = storeDev || {};
     const e = entry || {};
-    const hub = e.hub || {};
-    const isPrimary =
-      !batt?.phone_udid || batt.phone_udid === d.udid || !batt;
-    const phone = isPrimary ? batt?.phone : null;
-    const level = e.battery_level ?? hub.battery_level ?? phone?.battery_level ?? null;
-    const state = e.battery_state ?? hub.battery_state ?? phone?.battery_state ?? "";
-    const name = e.name || hub.name || phone?.name || d.name;
-    const productType = e.product_type || hub.product_type || phone?.product_type || d.product_type || "";
-    const stale = e.stale ?? e.hub_stale;
+    const productType = e.product_type || d.product_type || "";
     return {
-      udid: e.udid || hub.udid || d.udid,
+      udid: e.udid || d.udid,
       host: e.host || d.host,
-      name,
+      name: e.name || d.name,
       productType,
       kind: e.kind || classifyKind(productType, e.udid || d.udid),
-      level,
-      state,
-      stale: !!stale,
-      updatedAt: e.updated_at || e.hub_updated_at,
+      level: e.battery_level ?? null,
+      state: e.battery_state || "",
+      stale: !!e.stale,
+      updatedAt: e.updated_at,
       error: e.error,
     };
   }
 
   function rawAccessories(entry) {
     const e = entry || {};
-    const staleFb = !!(e.watch_stale || e.accessories_stale);
     const seen = new Set();
     const out = [];
-    const push = (raw, front) => {
+    (e.accessories || []).forEach((raw) => {
       if (!raw || raw.battery_level == null) return;
       const udid = raw.udid || "";
       const key = udid || raw.name || String(out.length);
       if (seen.has(key)) return;
       seen.add(key);
       const kind = raw.kind || classifyKind(raw.product_type, udid);
-      const item = {
+      out.push({
         ...raw,
         kind,
-        stale: raw.stale != null ? !!raw.stale : staleFb,
-      };
-      if (front) out.unshift(item);
-      else out.push(item);
-    };
-    (e.accessories || []).forEach((a) => push(a, false));
-    if (e.watch) push(e.watch, true);
+        stale: !!raw.stale,
+      });
+    });
     return out;
   }
 
@@ -167,16 +154,21 @@
     return rawAccessories(entry).map((a) => accessoryFromDevice(a, { stale: !!a.stale }));
   }
 
-  /** Level colors: ≤20 red, ≤30 orange, >30 green. Charging → green (not "Not Charging"). */
+  /** True while actively charging (not "full" / "Not Charging"). */
   function isChargingState(chargeState) {
     const s = String(chargeState || "").toLowerCase().replace(/_/g, " ").trim();
-    if (!s || /not\s*charg/.test(s)) return false;
-    return /\bcharg/.test(s) || s === "full";
+    if (!s || /not\s*charg/.test(s) || s === "full") return false;
+    return /\bcharg/.test(s);
+  }
+
+  function isFullState(chargeState) {
+    return String(chargeState || "").toLowerCase().replace(/_/g, " ").trim() === "full";
   }
 
   function battTone(level, chargeState) {
     if (level == null || Number.isNaN(Number(level))) return "unk";
-    if (isChargingState(chargeState)) return "charging";
+    // Green bar while charging or topped-off on power
+    if (isChargingState(chargeState) || isFullState(chargeState)) return "charging";
     const n = Number(level);
     if (n <= 20) return "low";
     if (n <= 30) return "mid";
@@ -275,11 +267,12 @@
     const list = $("deviceList");
     const batt = state.battery || {};
     empty.classList.toggle("hidden", devices.length > 0);
+    $("btnAdd")?.classList.toggle("hidden", devices.length === 0);
     list.innerHTML = "";
 
     devices.forEach((d, idx) => {
       const entry = deviceEntry(d.udid);
-      const view = deviceView(entry, d, batt);
+      const view = deviceView(entry, d);
       const accessories = listAccessories(entry);
       const b = statusBadge(view);
       const productType = view.productType || "";
@@ -288,11 +281,15 @@
       const deviceUdid = view.udid || d.udid;
 
       const chargeLabel =
-        view.level != null && isChargingState(view.state)
-          ? "Charging"
-          : view.state
-            ? String(view.state).replace(/_/g, " ")
-            : "";
+        view.level == null
+          ? ""
+          : isFullState(view.state)
+            ? "Full"
+            : isChargingState(view.state)
+              ? "Charging"
+              : view.state
+                ? String(view.state).replace(/_/g, " ")
+                : "";
       const busy = checking.has(d.udid);
       const isExpanded = expanded.has(d.udid);
 
@@ -413,7 +410,7 @@
           const entry =
             out.result ||
             ((out.battery && out.battery.devices) || []).find((d) => d.udid === udid);
-          const view = deviceView(entry, null, state.battery);
+          const view = deviceView(entry, null);
           if (view.stale) {
             setFooterMsg("No response — device may be asleep or off Wi‑Fi.", "warn");
           } else if (view.level != null) {
@@ -532,7 +529,6 @@
   }
 
   function collectEntityLookupRows() {
-    const batt = state.battery || {};
     const devices = state.store.devices || [];
     const rows = [];
     const seen = new Set();
@@ -551,7 +547,7 @@
     };
     devices.forEach((d) => {
       const entry = deviceEntry(d.udid);
-      const view = deviceView(entry, d, batt);
+      const view = deviceView(entry, d);
       pushDev(view.udid, view.name, view.productType);
       rawAccessories(entry).forEach((a) => {
         if (a && a.udid) pushDev(a.udid, a.name, a.product_type);
@@ -723,7 +719,7 @@
   }
 
   function rowsFromVerify(v, deviceMeta) {
-    const view = deviceView(v, deviceMeta, {});
+    const view = deviceView(v, deviceMeta);
     const rows = [];
     if (view.level != null) {
       const name = view.name || deviceMeta?.name || kindLabel(view.kind, "Device");
@@ -936,7 +932,7 @@
         next.onclick = null;
       } else if (job.state === "ok") {
         wiz.device = job.device;
-        wiz.host = job.device.wifi_host || job.device.host_guess || wiz.host || "";
+        wiz.host = job.device.wifi_host || wiz.host || "";
         next.textContent = "Continue";
         next.onclick = () => { wiz.step = 3; renderWizard(); };
       } else if (
@@ -1039,7 +1035,7 @@
         back.onclick = () => { wiz.step = 3; renderWizard(); };
         return;
       }
-      const view = deviceView(v, wiz.device, {});
+      const view = deviceView(v, wiz.device);
       const device = view.level != null ? view : null;
       const found = collectAccessories(v);
       const deviceTitleText = device
@@ -1121,7 +1117,7 @@
     }
 
     if (wiz.step === 5) {
-      const view = deviceView(wiz.verify, wiz.device, {});
+      const view = deviceView(wiz.verify, wiz.device);
       const device = view.level != null ? view : null;
       const found = collectAccessories(wiz.verify);
       const deviceName = device?.name || wiz.device?.name || kindLabel(view.kind, "Device");

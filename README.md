@@ -1,128 +1,70 @@
-# iDevice Battery for Home Assistant
+# Home Assistant App: iDevice Battery
 
-Pair **iPhone / iPad** over USB once, then poll battery (device + accessories) over
-Wi‑Fi and publish **MQTT discovery** sensors to Home Assistant.
+[![Open your Home Assistant instance and show the add app repository dialog with a specific repository URL pre-filled.][repo-badge]][repo]
 
-No Home Assistant Companion app is required for Watch or other accessories.
+![Supports aarch64 Architecture][aarch64-shield]
+![Supports amd64 Architecture][amd64-shield]
 
-| Device | How data is obtained |
-|--------|----------------------|
-| iPhone / iPad (device) | Wi-Fi lockdown (`:62078`) + Trust pair record → `com.apple.mobile.battery` |
-| Accessories (Watch, headphones, …) | **RemotePairing** (USB once) → userspace CDTunnel → RSD → `companion_proxy` |
+USB-pair an **iPhone** or **iPad** once, then poll battery over Wi‑Fi and publish
+MQTT sensors. Accessories (Apple Watch, AirPods, …) are read through the paired
+device. No Companion app.
 
-Accessories appear only if the hub exposes them. A device with no accessories
-is a normal, valid state.
+**Experimental.** Needs Home Assistant OS or Supervised. Sleeping devices drop
+off the LAN until they wake (lock screen is fine). Apple / pymobiledevice3 can
+break across iOS updates.
 
-> Classic AirBattery path (Apple **usbmuxd** + Wi-Fi `companion_proxy`) does
-> **not** work on Linux. Production path on HA OS is **RemotePairing + RSD**.
+## Installation
 
-## Repository layout
+Same path as any third-party Home Assistant app: add the repository, then install.
 
+1. Click the My button above, or add the URL by hand:
+
+   **Settings** → **Apps** → **App store** → **⋮** → **Repositories** → **Add**
+
+   ```text
+   https://github.com/eMMeCodes/iDeviceBattery
+   ```
+
+2. In the App store, find **iDevice Battery** → **Install** → **Start**.
+3. Open it from **Settings** → **Apps** → **iDevice Battery**.
+
+You need an MQTT broker (`mqtt:need`). Pair each device with USB via **Add
+device** in **Open Web UI**.
+
+Full usage, options, and limitations: [DOCS.md](idevice_battery/DOCS.md) (same
+text as the app **Documentation** tab).
+
+## How it works
+
+| | Path |
+| --- | --- |
+| iPhone / iPad | Wi‑Fi lockdown (`:62078`) + Trust record → `com.apple.mobile.battery` |
+| Watch / AirPods / … | RemotePairing (same USB session) → RSD → `companion_proxy` |
+
+The classic AirBattery stack (Apple usbmuxd + Wi‑Fi companion) does **not**
+work on Linux. This app uses RemotePairing + RSD.
+
+## Layout
+
+```text
+idevice_battery/     Home Assistant app (config, image, Web UI)
+docs/                Architecture, pairing CLI, troubleshooting
 ```
-idevice_battery/            Home Assistant add-on (copy to /addons/idevice_battery/)
-docs/                       Architecture, pairing, troubleshooting
-homeassistant/
-  packages/                 optional command_line fallback (MQTT discovery is primary)
-  lovelace/                 Bubble Card example
-```
 
-## Requirements
-
-- Home Assistant OS / Supervised on **aarch64** or **amd64** (HA OS 18 + Core 2026.8 tested on aarch64)
-- Not an integration for HA Core/Container; add-ons need Supervisor
-- Mosquitto (or another MQTT broker) — add-on requests `mqtt:need`
-- Device on the same LAN as Home Assistant
-- One-time USB connection to the HA host (Trust + RemotePairing)
-- Add-on privileges: `usb`, `udev`, `host_network`, `share:rw`, AppArmor off
-
-## Quick start
-
-### 1. Install the add-on
-
-```bash
-cp -a idevice_battery /addons/idevice_battery
-# Local build: remove the `image:` line from /addons/idevice_battery/config.yaml
-```
-
-Then: **Settings → Add-ons → Add-on store → ⋮ → Check for updates → iDevice Battery → Install**.
-
-Configuration has a single option:
-
-| Option | Description |
-|--------|-------------|
-| `poll_minutes` | How often to poll (menu **1–10**, default **3**) |
-
-MQTT host/credentials come from Supervisor. Optional fallback file:
-`/share/idevice_mqtt.json` (`host`, `port`, `username`, `password`).
-
-### 2. Pair devices (Ingress UI)
-
-Open the add-on **Open Web UI** (or sidebar **iDevice Battery**) and tap **+ Add**.
-
-The wizard:
-
-1. Unlock the device and plug it into the HA machine via USB
-2. Tap **Trust** on the device if asked (re-pair skips this)
-3. Detects the LAN IPv4 (Bonjour; not link-local `fe80`)
-4. Verifies battery over Wi‑Fi and shows Home Assistant `entity_id`s
-5. Saves the device — unplug USB. Daily use is Wi‑Fi only
-
-Repeat **+ Add** for each hub (phone, iPad, …).
-
-### 3. Home Assistant entities
-
-MQTT discovery creates, per hub and per accessory that reports battery:
-
-- `sensor.idevice_<key>_battery`
-- `sensor.idevice_<key>_battery_state`
-
-`<key>` is a stable short id from the device UDID. Expand a card in the UI to
-copy the real `entity_id`.
-
-A JSON snapshot is still written to `/share/idevice_battery.json` (optional
-`command_line` package in `homeassistant/packages/` if you do not want MQTT).
-
-### 4. Dashboard (optional)
-
-See `homeassistant/lovelace/bubble_card_example.yaml`. Prefer the MQTT
-`sensor.idevice_*` entities over the old `command_line` sensors.
-
-## Charging state
-
-Apple may report `BatteryIsCharging: false` while the cable is connected
-(`ExternalConnected: true`) during **Optimized Battery Charging** (~80% hold).
-
-Hub mapping:
-
-| Condition | `battery_state` |
-|-----------|-----------------|
-| `FullyCharged` | `full` |
-| `BatteryIsCharging` **or** `ExternalConnected` | `charging` |
-| otherwise | `Not Charging` |
-
-Accessories use companion `BatteryIsCharging` only.
-
-UI battery bar: **≤20% red**, **≤30% orange**, **>30% green**. Charging is
-always green, with a plug icon next to the percentage.
-
-## Sleep / reachability
-
-When the hub sleeps, Bonjour RemotePairing and lockdown `:62078` often
-disappear. The poll fails; last known values are kept. Unlock the device
-(Wi‑Fi on) and tap **↻**, or wait one poll cycle.
-
-Accessory scans can skip a round while the hub is locked; last known accessory
-values stay on screen.
-
-## Documentation
+## Docs
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Pairing](docs/PAIRING.md)
+- [Pairing (CLI)](docs/PAIRING.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Changelog](CHANGELOG.md)
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — [LICENSE](LICENSE).
 
-`pymobiledevice3` and Apple protocols are third-party; this project only
-orchestrates them for Home Assistant.
+`pymobiledevice3` and Apple protocols are third-party.
+
+[aarch64-shield]: https://img.shields.io/badge/aarch64-yes-green.svg
+[amd64-shield]: https://img.shields.io/badge/amd64-yes-green.svg
+[repo-badge]: https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg
+[repo]: https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FeMMeCodes%2FiDeviceBattery

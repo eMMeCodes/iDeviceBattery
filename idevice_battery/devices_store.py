@@ -2,16 +2,18 @@
 """Device registry for iDevice Battery add-on."""
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 DATA = Path(os.environ.get("IDEVICE_DATA", "/data"))
 DEVICES_PATH = DATA / "devices.json"
 OPTS_PATH = DATA / "options.json"
-BATTERY_JSON = Path(os.environ.get("IDEVICE_BATTERY_JSON", "/share/idevice_battery.json"))
+LOCK_PATH = DATA / "devices.lock"
 
 
 def _now() -> str:
@@ -23,50 +25,28 @@ def default_store() -> dict[str, Any]:
 
 
 def _poll_seconds_from_opts(opts: dict[str, Any]) -> int | None:
-    """Configuration: poll_minutes 1–10 (legacy: poll_seconds)."""
+    """Configuration: poll_minutes 1–10."""
     if opts.get("poll_minutes") is not None:
         try:
             minutes = int(opts["poll_minutes"])
             return max(1, min(10, minutes)) * 60
         except (TypeError, ValueError):
             return None
-    if opts.get("poll_seconds") is not None:
-        try:
-            sec = int(opts["poll_seconds"])
-            minutes = max(1, min(10, round(sec / 60) or 1))
-            return minutes * 60
-        except (TypeError, ValueError):
-            return None
     return None
 
 
-def _seed_from_battery_json(store: dict[str, Any]) -> None:
-    """One-time migration: rebuild registry from /share/idevice_battery.json."""
-    if store["devices"] or not BATTERY_JSON.exists():
-        return
-    try:
-        raw = json.loads(BATTERY_JSON.read_text())
-        for entry in raw.get("devices") or []:
-            udid = (entry.get("udid") or "").strip()
-            host = (entry.get("host") or "").strip()
-            if not udid or not host:
-                continue
-            store["devices"].append(
-                {
-                    "udid": udid,
-                    "host": host,
-                    "name": entry.get("name") or udid[:8],
-                    "product_type": entry.get("product_type") or "",
-                    "added_at": _now(),
-                }
-            )
-        if store["devices"]:
-            save_store(store)
-    except Exception:
-        pass
+@contextmanager
+def _lock() -> Iterator[None]:
+    DATA.mkdir(parents=True, exist_ok=True)
+    with open(LOCK_PATH, "a+", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
-def load_store() -> dict[str, Any]:
+def _read_store_unlocked() -> dict[str, Any]:
     store = default_store()
     if DEVICES_PATH.exists():
         try:
@@ -76,30 +56,6 @@ def load_store() -> dict[str, Any]:
                 store["devices"] = list(raw.get("devices") or [])
         except Exception:
             pass
-    # Seed from legacy add-on options (one-time if empty)
-    if not store["devices"] and OPTS_PATH.exists():
-        try:
-            opts = json.loads(OPTS_PATH.read_text())
-            udid = (opts.get("phone_udid") or "").strip()
-            host = (opts.get("phone_host") or "").strip()
-            if udid and host:
-                store["devices"].append(
-                    {
-                        "udid": udid,
-                        "host": host,
-                        "name": udid[:8],
-                        "product_type": "",
-                        "added_at": _now(),
-                    }
-                )
-            poll = _poll_seconds_from_opts(opts)
-            if poll is not None:
-                store["poll_seconds"] = poll
-            save_store(store)
-        except Exception:
-            pass
-    if not store["devices"]:
-        _seed_from_battery_json(store)
     if OPTS_PATH.exists():
         try:
             opts = json.loads(OPTS_PATH.read_text())
@@ -111,30 +67,64 @@ def load_store() -> dict[str, Any]:
     return store
 
 
-def save_store(store: dict[str, Any]) -> None:
+def _write_store_unlocked(store: dict[str, Any]) -> None:
     DATA.mkdir(parents=True, exist_ok=True)
     tmp = DEVICES_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(store, indent=2))
     tmp.replace(DEVICES_PATH)
 
 
+def load_store() -> dict[str, Any]:
+    with _lock():
+        return _read_store_unlocked()
+
+
+def save_store(store: dict[str, Any]) -> None:
+    with _lock():
+        _write_store_unlocked(store)
+
+
+def registered_udids() -> set[str]:
+    return {str(d.get("udid")) for d in load_store().get("devices") or [] if d.get("udid")}
+
+
+def patch_device(udid: str, **fields: Any) -> bool:
+    """Update fields on a registry row. No-op (False) if the UDID was removed."""
+    with _lock():
+        store = _read_store_unlocked()
+        found = False
+        for d in store.get("devices") or []:
+            if d.get("udid") != udid:
+                continue
+            for key, value in fields.items():
+                if value is not None:
+                    d[key] = value
+            found = True
+            break
+        if found:
+            _write_store_unlocked(store)
+        return found
+
+
 def upsert_device(device: dict[str, Any]) -> dict[str, Any]:
-    store = load_store()
-    udid = device["udid"]
-    devices = [d for d in store["devices"] if d.get("udid") != udid]
-    device = dict(device)
-    device.setdefault("added_at", _now())
-    devices.append(device)
-    store["devices"] = devices
-    save_store(store)
-    return store
+    with _lock():
+        store = _read_store_unlocked()
+        udid = device["udid"]
+        devices = [d for d in store["devices"] if d.get("udid") != udid]
+        device = dict(device)
+        device.setdefault("added_at", _now())
+        devices.append(device)
+        store["devices"] = devices
+        _write_store_unlocked(store)
+        return store
 
 
 def remove_device(udid: str) -> dict[str, Any]:
-    store = load_store()
-    store["devices"] = [d for d in store["devices"] if d.get("udid") != udid]
-    save_store(store)
-    return store
+    with _lock():
+        store = _read_store_unlocked()
+        store["devices"] = [d for d in store["devices"] if d.get("udid") != udid]
+        _write_store_unlocked(store)
+        return store
 
 
 def primary_device() -> dict[str, Any] | None:

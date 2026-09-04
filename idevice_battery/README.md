@@ -1,12 +1,29 @@
-# iDevice Battery (Home Assistant app)
+# Home Assistant App: iDevice Battery
 
-See [DOCS.md](DOCS.md) for user-facing documentation.
+USB-pair an iPhone or iPad once, then poll battery over Wi‑Fi. MQTT sensors, no Companion app.
 
-Developer notes:
+![Supports aarch64 Architecture][aarch64-shield]
+![Supports amd64 Architecture][amd64-shield]
 
-- Slug/folder `idevice_battery` matches the product name **iDevice Battery**.
-- Published as [eMMeCodes/iDeviceBattery](https://github.com/eMMeCodes/iDeviceBattery).
-- Local development: copy this folder to `/addons/idevice_battery` and **remove**
-  the `image:` line from `config.yaml` so the Supervisor builds locally.
-- Optional live UI overlay: `/share/idevice_ui/.enable` (or env `IDEVICE_UI_OVERLAY=1`).
-  Without that flag the image `/www` is used.
+## About
+
+Pair an **iPhone** or **iPad** to the Home Assistant host over USB once (Trust +
+RemotePairing). After that, battery is read over Wi‑Fi and published as MQTT
+discovery sensors.
+
+Accessories (Apple Watch, AirPods, and similar) are read **through the paired
+device** when it exposes them. A device with no accessories is normal.
+
+This app is **experimental**. It needs Home Assistant OS or Supervised, an MQTT
+broker, and a one-time USB connection. Deep sleep often drops Wi‑Fi lockdown
+until the device wakes (the lock screen is fine). Apple protocols can change
+with iOS.
+
+Open **Documentation** on this page for install, pairing, and options.
+
+After install the app is at **Settings** → **Apps** → **iDevice Battery**.
+Source and issues: [eMMeCodes/iDeviceBattery][github].
+
+[aarch64-shield]: https://img.shields.io/badge/aarch64-yes-green.svg
+[amd64-shield]: https://img.shields.io/badge/amd64-yes-green.svg
+[github]: https://github.com/eMMeCodes/iDeviceBattery
