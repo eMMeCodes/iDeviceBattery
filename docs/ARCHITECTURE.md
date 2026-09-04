@@ -2,7 +2,7 @@
 
 ## Goal
 
-Expose the same battery numbers AirBattery shows for an iPhone and its paired
+Expose the same battery numbers [AirBattery](https://github.com/lihaoyun6/AirBattery) shows for an iPhone and its paired
 Apple Watch, on **Home Assistant OS (Linux / Raspberry Pi)**, over Wi-Fi after a
 one-time USB pairing.
 

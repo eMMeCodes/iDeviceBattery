@@ -51,7 +51,7 @@ That file is the same text as the app **Documentation** tab.
 | iPhone / iPad | Wi‑Fi lockdown (`:62078`) + Trust record → `com.apple.mobile.battery` |
 | Watch / AirPods / … | RemotePairing (same USB session) → RSD → `companion_proxy` |
 
-The classic AirBattery stack (Apple usbmuxd + Wi‑Fi companion) does **not** work on Linux.
+The classic [AirBattery](https://github.com/lihaoyun6/AirBattery) stack (Apple usbmuxd + Wi‑Fi companion) does **not** work on Linux.
 
 This app uses RemotePairing + RSD.
 
