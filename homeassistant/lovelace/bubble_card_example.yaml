@@ -1,0 +1,35 @@
+# Example Bubble Card (custom:bubble-card)
+# Copy entity_ids from the add-on UI (MQTT discovery).
+# Replace the placeholders below.
+
+type: custom:bubble-card
+card_type: button
+button_type: state
+entity: sensor.idevice_IPHONE_battery
+name: iPhone
+icon: mdi:cellphone
+card_layout: large-sub-buttons-grid
+rows: "1"
+show_state: true
+show_name: true
+sub_button:
+  - entity: sensor.idevice_IPHONE_battery
+    icon: mdi:cellphone
+    show_state: true
+    show_icon: true
+    show_background: true
+  - entity: sensor.idevice_IPHONE_battery_state
+    icon: mdi:battery-charging
+    show_state: true
+    show_icon: true
+    show_background: true
+  - entity: sensor.idevice_WATCH_battery
+    icon: mdi:watch
+    show_state: true
+    show_icon: true
+    show_background: true
+  - entity: sensor.idevice_WATCH_battery_state
+    icon: mdi:battery-heart
+    show_state: true
+    show_icon: true
+    show_background: true

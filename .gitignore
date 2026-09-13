@@ -1,0 +1,26 @@
+# OS / editor
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Secrets / local pair records — never commit
+*.plist
+.data/
+lockdown/
+.pymobiledevice3/
+
+# Runtime artifacts
+idevice_battery.json
+*.log
+*.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# HA local noise
+.storage/

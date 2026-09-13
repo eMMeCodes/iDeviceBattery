@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>iDevice Battery</title>
+  <link rel="stylesheet" href="style.css?v=0.9.28" />
+</head>
+<body>
+  <header class="top">
+    <div class="top-left">
+      <a id="btnBack" class="back" href="/config/app/local_idevice_battery/info" aria-label="Back">
+        <span aria-hidden="true">←</span>
+      </a>
+      <div>
+        <h1>iDevice Battery</h1>
+        <p class="sub">Devices · expand for details</p>
+      </div>
+    </div>
+    <button id="btnAdd" class="btn primary hidden" type="button">+ Add</button>
+  </header>
+
+  <main>
+    <section id="listEmpty" class="empty hidden">
+      <p>No devices paired yet.</p>
+      <button class="btn primary" type="button" data-open-add>Add device</button>
+    </section>
+    <section id="deviceList" class="cards"></section>
+    <p id="footerStatus" class="footer"></p>
+  </main>
+
+  <!-- Wizard modal -->
+  <div id="wizard" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2 id="wizTitle">Add an iDevice</h2>
+        <button id="wizClose" class="btn ghost" type="button" aria-label="Close">×</button>
+      </div>
+      <div id="wizBody" class="modal-body"></div>
+      <div class="modal-actions">
+        <button id="wizBack" class="btn" type="button">Back</button>
+        <button id="wizNext" class="btn primary" type="button">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="product_map.js?v=0.9.28"></script>
+  <script src="app.js?v=0.9.28"></script>
+</body>
+</html>
