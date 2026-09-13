@@ -67,6 +67,9 @@ docs/                Architecture, pairing CLI, troubleshooting
 - [Architecture](docs/ARCHITECTURE.md)
 - [Pairing (CLI)](docs/PAIRING.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Forum presentation (editable)](docs/PRESENTATION.md)
+- [Forum paste body](docs/PRESENTATION_FORUM.md)
+- [Home Assistant Apps spec / sharing](docs/HA_APPS.md)
 - [Changelog](CHANGELOG.md)
 
 ## License

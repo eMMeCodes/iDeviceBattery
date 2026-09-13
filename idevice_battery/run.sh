@@ -119,16 +119,20 @@ avahi-daemon --daemonize --no-chroot 2>/tmp/avahi.err || true
 usbmuxd 2>/dev/null || true
 sleep 1
 
-echo "=== enable wifi lockdown (best-effort, primary device) ==="
+echo "=== enable wifi lockdown (best-effort, all paired devices) ==="
 python3 - <<'PY' || true
-from devices_store import primary_device
+from devices_store import listed_devices
 from pair_service import _enable_wifi_connections
 
-dev = primary_device()
-if not dev:
+devs = listed_devices()
+if not devs:
     print("no device yet — use Add in the UI")
 else:
-    _enable_wifi_connections(dev["udid"])
+    for dev in devs:
+        udid = dev.get("udid")
+        if udid:
+            print(f"wifi-connections on {udid[:8]}…", flush=True)
+            _enable_wifi_connections(udid)
 PY
 
 echo "=== start Ingress UI :8109 ==="
@@ -136,7 +140,7 @@ python3 /webui.py &
 UI_PID=$!
 
 echo "=== poll loop ==="
-python3 /rsd_battery.py &
+IDEVICE_MQTT_CLIENT_ID=idevice_battery_poll python3 /rsd_battery.py &
 POLL_PID=$!
 
 cleanup() {
@@ -144,9 +148,40 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Wait on either; if one dies, exit so s6 restarts
+START_TS="$(date +%s)"
+JSON="${IDEVICE_BATTERY_JSON}"
+# Wait on either; if one dies, exit so s6 restarts.
+# If registry has devices and JSON is not rewritten for > 2× poll, kill poller.
 while kill -0 "$UI_PID" 2>/dev/null && kill -0 "$POLL_PID" 2>/dev/null; do
   sleep 5
+  if python3 - "$POLL" "$START_TS" "$JSON" <<'PY'
+import json, os, sys, time
+
+poll = int(sys.argv[1])
+start = int(sys.argv[2])
+path = sys.argv[3]
+now = time.time()
+if now - start < poll + 60:
+    raise SystemExit(0)
+try:
+    store = json.load(open("/data/devices.json"))
+except Exception:
+    raise SystemExit(0)
+if not (store.get("devices") or []):
+    raise SystemExit(0)
+try:
+    age = now - os.path.getmtime(path)
+except OSError:
+    raise SystemExit(1)
+raise SystemExit(1 if age > 2 * poll else 0)
+PY
+  then
+    :
+  else
+    echo "poll watchdog: ${JSON} too old — restarting add-on" >&2
+    kill "$POLL_PID" 2>/dev/null || true
+    exit 1
+  fi
 done
 echo "a service exited — restarting add-on" >&2
 exit 1

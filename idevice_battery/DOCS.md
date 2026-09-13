@@ -120,8 +120,8 @@ Leftover `FullyCharged` after unplug is treated as **Not Charging**.
 ## Known issues and limitations
 
 - **Home Assistant OS or Supervised only** (`aarch64`, `amd64`). Not Core or Container.
-- **Sleep.** Deep sleep often closes port `:62078` and Bonjour. Last good values are kept; the card shows **Stale**; MQTT is not overwritten until the next successful read. Wake the device on Wi‑Fi (unlock is not required) and wait one poll, or tap **↻**.
-- **Accessories.** Watch / headphones appear only if the paired device exposes them. No RemotePairing record (typical on some iPads): accessories are skipped quietly; device battery still works.
+- **Sleep.** Deep sleep often closes port `:62078` and Bonjour. A completed poll still rewrites the snapshot with **Stale**; MQTT is not overwritten until the next successful read. Wake the device on Wi‑Fi (unlock is not required) and wait one poll. The poller must not freeze: if the snapshot stops updating, the add-on restarts itself.
+- **Accessories.** Watch, headphones, Pencil, and similar appear only if the paired iPhone/iPad exposes them on CompanionProxy. They are optional. Pair USB once; accessories added later on the device are picked up on the next poll. No RemotePairing record (typical on some iPads): accessories are skipped quietly; device battery still works.
 - **iOS / pymobiledevice3.** This path uses Apple protocols that can change without notice.
 
 ## Support

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import subprocess
@@ -76,7 +77,10 @@ def list_usb_devices() -> list[dict[str, Any]]:
                     finally:
                         await ld.close()
 
-                info = asyncio.run(_info())
+                async def _info_to():
+                    return await asyncio.wait_for(_info(), timeout=8)
+
+                info = asyncio.run(_info_to())
                 entry.update(info)
             except Exception:
                 pass
@@ -308,26 +312,57 @@ def _ipv4_from_neigh(mac: str) -> str:
     return ""
 
 
+async def probe_lockdown_port(host: str, *, timeout: float = 3.0) -> bool:
+    """True if TCP :62078 accepts a connection (device awake on Wi‑Fi)."""
+    import ipaddress
+
+    h = (host or "").strip()
+    if not h:
+        return False
+    bare = h.split("%", 1)[0]
+    try:
+        ipaddress.ip_address(bare)
+    except ValueError:
+        return False
+    writer = None
+    try:
+        conn = asyncio.open_connection(bare, 62078)
+        _reader, writer = await asyncio.wait_for(conn, timeout=timeout)
+        return True
+    except Exception:
+        return False
+    finally:
+        if writer is not None:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+
 async def _hosts_from_mobdev2(udid: str) -> list[str]:
     """IPs from _apple-mobdev2._tcp Bonjour (lockdown-over-Wi‑Fi), matched by UDID."""
     hosts: list[str] = []
     try:
         from pymobiledevice3.lockdown import get_mobdev2_lockdowns
 
-        async for ip, ld in get_mobdev2_lockdowns(
-            udid=udid,
-            pair_records=LOCKDOWN_DIR,
-            only_paired=True,
-        ):
-            if ip:
-                hosts.append(str(ip))
-            try:
-                await ld.close()
-            except Exception:
+        async def _collect() -> list[str]:
+            found: list[str] = []
+            async for ip, ld in get_mobdev2_lockdowns(
+                udid=udid,
+                pair_records=LOCKDOWN_DIR,
+                only_paired=True,
+            ):
+                if ip:
+                    found.append(str(ip))
                 try:
-                    await ld.service.close()
+                    await ld.close()
                 except Exception:
-                    pass
+                    try:
+                        await ld.service.close()
+                    except Exception:
+                        pass
+            return found
+
+        hosts = await asyncio.wait_for(_collect(), timeout=8)
     except Exception as e:
         print(f"[pair] mobdev2 browse: {e}", flush=True)
     return hosts
@@ -383,53 +418,42 @@ def _resolve_hostnames(hosts: list[str]) -> list[str]:
     return out
 
 
+def _dedupe_hosts(hosts: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for h in hosts:
+        key = (h or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
 async def _bonjour_addresses_for_udid(udid: str) -> list[str]:
-    """All Wi‑Fi addresses Bonjour advertises for this UDID (A + AAAA).
-
-    Matches the RemotePairing service to ``udid`` via a short connect attempt,
-    then returns every address on that service — not only the one that connected.
-    """
-    import contextlib
-
+    """IPv4/IPv6 advertised on RemotePairing Bonjour (no tunnel — UDID match is mobdev2)."""
     from pymobiledevice3.bonjour import browse_remotepairing
-    from pymobiledevice3.remote.tunnel_service import (
-        create_core_device_tunnel_service_using_remotepairing,
-    )
 
     hosts: list[str] = []
-    for answer in await browse_remotepairing():
-        matched = False
-        for address in answer.addresses or []:
-            full = getattr(address, "full_ip", None) or getattr(address, "ip", None)
-            if not full:
-                continue
-            try:
-                svc = await create_core_device_tunnel_service_using_remotepairing(
-                    udid, str(full), answer.port
-                )
-                matched = True
-                with contextlib.suppress(Exception):
-                    await svc.close()
-                break
-            except Exception:
-                continue
-        if not matched:
-            continue
-        for address in answer.addresses or []:
+    try:
+        answers = await asyncio.wait_for(browse_remotepairing(), timeout=8)
+    except Exception as e:
+        print(f"[pair] remotepairing browse: {e}", flush=True)
+        return []
+    for answer in answers or []:
+        for address in getattr(answer, "addresses", None) or []:
             ip = getattr(address, "ip", None)
             if ip:
                 hosts.append(str(ip))
             full = getattr(address, "full_ip", None)
             if full:
                 hosts.append(str(full))
-        # mDNS target (Name.local) — resolve to IPs; do not rely on the name alone
         mdns_host = getattr(answer, "host", None)
         if mdns_host:
             name = str(mdns_host).rstrip(".")
             hosts.append(name)
             hosts.extend(_resolve_hostnames([name]))
-        break
-    return hosts
+    return _dedupe_hosts(hosts)
 
 
 def pick_wifi_host(hosts: list[str]) -> str:
@@ -443,42 +467,66 @@ def pick_wifi_host(hosts: list[str]) -> str:
 
 
 async def discover_wifi_host_async(
-    udid: str, attempts: int = 6, delay: float = 2.0
+    udid: str,
+    attempts: int = 6,
+    delay: float = 2.0,
+    *,
+    skip_tunnel: bool = False,
+    prefer_host: str = "",
 ) -> str:
-    """Collect real LAN addresses: RemotePairing, mobdev2, ARP — retry while Bonjour wakes."""
-    import contextlib
+    """Collect LAN addresses: stored :62078, mobdev2, ARP; Bonjour only if needed.
+
+    ``skip_tunnel`` (poll path): never open a RemotePairing TCP tunnel to find the IP.
+    """
+    if prefer_host and await probe_lockdown_port(prefer_host):
+        return prefer_host
 
     last_hosts: list[str] = []
     for i in range(max(1, attempts)):
         hosts: list[str] = []
+        if prefer_host:
+            hosts.append(prefer_host)
         try:
-            hosts.extend(await _bonjour_addresses_for_udid(udid))
+            hosts.extend(await _hosts_from_mobdev2(udid))
         except Exception as e:
-            print(f"[pair] remotepairing browse: {e}", flush=True)
-        try:
-            from pymobiledevice3.remote.tunnel_service import (
-                get_remote_pairing_tunnel_services,
-            )
+            print(f"[pair] mobdev2: {e}", flush=True)
 
-            services = await get_remote_pairing_tunnel_services(udid=udid)
-            for s in services or []:
-                host = getattr(s, "hostname", None)
-                if host:
-                    hosts.append(str(host))
-                with contextlib.suppress(Exception):
-                    await s.close()
-        except Exception as e:
-            print(f"[pair] wifi_host tunnel list: {e}", flush=True)
+        if not skip_tunnel:
+            try:
+                mac = await asyncio.wait_for(_wifi_mac_usb(udid), timeout=5)
+            except Exception as e:
+                print(f"[pair] WiFiAddress: {e}", flush=True)
+                mac = ""
+            if mac:
+                arp_ip = _ipv4_from_neigh(mac)
+                print(f"[pair] WiFiAddress={mac} arp={arp_ip!r}", flush=True)
+                if arp_ip:
+                    hosts.append(arp_ip)
 
-        hosts.extend(await _hosts_from_mobdev2(udid))
+        if not skip_tunnel:
+            try:
+                hosts.extend(await _bonjour_addresses_for_udid(udid))
+            except Exception as e:
+                print(f"[pair] remotepairing browse: {e}", flush=True)
+            try:
+                from pymobiledevice3.remote.tunnel_service import (
+                    get_remote_pairing_tunnel_services,
+                )
 
-        mac = await _wifi_mac_usb(udid)
-        if mac:
-            arp_ip = _ipv4_from_neigh(mac)
-            print(f"[pair] WiFiAddress={mac} arp={arp_ip!r}", flush=True)
-            if arp_ip:
-                hosts.append(arp_ip)
+                services = await asyncio.wait_for(
+                    get_remote_pairing_tunnel_services(udid=udid),
+                    timeout=8,
+                )
+                for s in services or []:
+                    host = getattr(s, "hostname", None)
+                    if host:
+                        hosts.append(str(host))
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(s.close(), timeout=2)
+            except Exception as e:
+                print(f"[pair] wifi_host tunnel list: {e}", flush=True)
 
+        hosts = _dedupe_hosts(hosts)
         last_hosts = hosts
         chosen = pick_wifi_host(hosts)
         print(
@@ -486,6 +534,8 @@ async def discover_wifi_host_async(
             flush=True,
         )
         if chosen and _host_rank(chosen) == 0:
+            if await probe_lockdown_port(chosen) or skip_tunnel:
+                return chosen
             return chosen
         if i + 1 < attempts:
             _set_job(
@@ -594,11 +644,24 @@ def run_pair_job(udid: Optional[str] = None) -> None:
         )
 
 
+JOB_STALE_SEC = 180
+
+
 def start_pair_async(udid: Optional[str] = None, force: bool = False) -> dict[str, Any]:
     with _job_lock:
-        # Allow Retry to restart a stuck need_trust / running job
-        if not force and _job.get("state") in ("running", "need_trust"):
-            return get_job()
+        state = _job.get("state")
+        if not force and state in ("running", "need_trust"):
+            updated = _job.get("updated_at") or ""
+            stale = True
+            try:
+                from datetime import datetime, timezone
+
+                ts = datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
+                stale = (datetime.now(timezone.utc) - ts).total_seconds() > JOB_STALE_SEC
+            except Exception:
+                stale = True
+            if not stale:
+                return dict(_job)
         _job.update(
             {
                 "state": "running",
@@ -636,18 +699,11 @@ def finish_pair(host: str, name: Optional[str] = None) -> dict[str, Any]:
     mqtt_entry["host"] = entry["host"]
     mqtt_entry["udid"] = entry["udid"]
     try:
-        from pathlib import Path
-        import json as _json
         from datetime import datetime, timezone
+        from devices_store import read_battery_doc, write_battery_doc
         from model import empty_device_entry
 
-        out = Path(os.environ.get("IDEVICE_BATTERY_JSON", "/share/idevice_battery.json"))
-        prev: dict[str, Any] = {}
-        try:
-            if out.exists():
-                prev = _json.loads(out.read_text())
-        except Exception:
-            prev = {}
+        prev = read_battery_doc()
         devices_out = []
         for d in store.get("devices") or []:
             if d.get("udid") == entry["udid"]:
@@ -664,10 +720,7 @@ def finish_pair(host: str, name: Optional[str] = None) -> dict[str, Any]:
             "devices": devices_out,
             "error": mqtt_entry.get("error"),
         }
-        out.parent.mkdir(parents=True, exist_ok=True)
-        tmp = out.with_suffix(".tmp")
-        tmp.write_text(_json.dumps(doc, indent=2, default=str))
-        tmp.replace(out)
+        write_battery_doc(doc)
     except Exception as e:
         print(f"[pair] battery json update failed: {e}", flush=True)
     try:
@@ -691,7 +744,10 @@ def verify_device(udid: str, host: str) -> dict[str, Any]:
     """One-shot poll for wizard Verify step."""
     import rsd_battery as rb
 
-    rb.UDID = udid
-    rb.HOST = host
-    dev = {"udid": udid, "host": host}
-    return asyncio.run(rb.fetch_device(dev, {}))
+    async def _run() -> dict[str, Any]:
+        return await asyncio.wait_for(
+            rb.fetch_device({"udid": udid, "host": host}, {}),
+            timeout=float(os.environ.get("IDEVICE_FETCH_TIMEOUT", "55")),
+        )
+
+    return asyncio.run(_run())

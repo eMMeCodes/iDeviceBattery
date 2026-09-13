@@ -2,9 +2,10 @@
 """Device + accessory battery over Wi-Fi (AirBattery-equivalent values on Linux).
 
 Device (iPhone / iPad): lockdown TCP :62078 + pair record → com.apple.mobile.battery
-Accessory (Watch, AirPods, …): RemotePairing → userspace CDTunnel → RSD → CompanionProxy
+Accessory (Watch, AirPods, Pencil, …): RemotePairing → RSD → CompanionProxy
 
 Reads paired devices from /data/devices.json (see devices_store.py).
+Identity is UDID. Accessories are optional and whatever CompanionProxy lists.
 """
 from __future__ import annotations
 
@@ -18,7 +19,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from devices_store import load_store, patch_device, primary_device, registered_udids
+from devices_store import (
+    load_store,
+    patch_device,
+    read_battery_doc,
+    registered_udids,
+    write_battery_doc,
+)
 from model import (
     accessories_from_entry,
     classify_kind,
@@ -27,14 +34,12 @@ from model import (
     normalize_accessory,
 )
 
-OUT = Path(os.environ.get("IDEVICE_BATTERY_JSON", "/share/idevice_battery.json"))
 LOCKDOWN_DIR = Path(os.environ.get("IDEVICE_LOCKDOWN", "/var/lib/lockdown"))
 DEFAULT_MTU = int(os.environ.get("IDEVICE_CDTUNNEL_MTU", "16000"))
 LOCKDOWN_TIMEOUT = float(os.environ.get("IDEVICE_LOCKDOWN_TIMEOUT", "20"))
-
-# Mutable for verify/wizard one-shots
-UDID = os.environ.get("IDEVICE_UDID", "").strip()
-HOST = os.environ.get("IDEVICE_HOST", "").strip()
+ACCESSORY_TIMEOUT = float(os.environ.get("IDEVICE_ACCESSORY_TIMEOUT", "25"))
+FETCH_ONCE_TIMEOUT = float(os.environ.get("IDEVICE_FETCH_TIMEOUT", "55"))
+HOST_REFRESH_TIMEOUT = float(os.environ.get("IDEVICE_HOST_REFRESH_TIMEOUT", "12"))
 
 
 def _ensure_pem(data: bytes, kind: str) -> bytes:
@@ -51,9 +56,8 @@ def _ensure_pem(data: bytes, kind: str) -> bytes:
     ).encode()
 
 
-def load_pair_record(udid: str | None = None) -> dict[str, Any]:
-    uid = udid or UDID
-    plist_path = LOCKDOWN_DIR / f"{uid}.plist"
+def load_pair_record(udid: str) -> dict[str, Any]:
+    plist_path = LOCKDOWN_DIR / f"{udid}.plist"
     if not plist_path.exists():
         raise FileNotFoundError(f"missing pair record {plist_path}")
     rec = dict(__import__("plistlib").loads(plist_path.read_bytes()))
@@ -63,33 +67,57 @@ def load_pair_record(udid: str | None = None) -> dict[str, Any]:
 
 
 def _load_prev() -> dict[str, Any]:
-    try:
-        if OUT.exists():
-            return json.loads(OUT.read_text())
-    except Exception:
-        pass
-    return {}
+    return read_battery_doc()
 
 
-async def _refresh_device_host(
-    dev: dict[str, Any], *, attempts: int = 2, delay: float = 0.5
-) -> bool:
-    """Resolve current Wi‑Fi IP from Bonjour; update dev['host'] when it changes."""
-    from pair_service import _host_rank, discover_wifi_host_async
+def _stale_doc(prev: dict[str, Any], error: str) -> dict[str, Any]:
+    devices = []
+    for entry in prev.get("devices") or []:
+        if not isinstance(entry, dict):
+            continue
+        row = dict(entry)
+        if row.get("battery_level") is not None:
+            row["stale"] = True
+        row["error"] = error
+        acc = accessories_from_entry(row)
+        row["accessories"] = mark_accessories_stale(acc)
+        devices.append(row)
+    return {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "path": "remotepairing-userspace-rsd",
+        "devices": devices,
+        "error": error,
+    }
+
+
+async def _refresh_device_host(dev: dict[str, Any]) -> bool:
+    """Keep stored IPv4 if :62078 is open; otherwise Bonjour/mobdev2 without tunnels."""
+    from pair_service import discover_wifi_host_async, probe_lockdown_port
 
     host = str(dev.get("host") or "")
-    # Stored IPv4: quick Bonjour probe only (device may be asleep → keep IP)
-    if _host_rank(host) == 0 and attempts > 2:
-        attempts = 2
+    udid = str(dev.get("udid") or "")
+    if not udid:
+        return False
     try:
-        better = await discover_wifi_host_async(str(dev["udid"]), attempts=attempts, delay=delay)
+        if host and await probe_lockdown_port(host):
+            return False
+        better = await asyncio.wait_for(
+            discover_wifi_host_async(
+                udid,
+                attempts=1,
+                delay=0,
+                skip_tunnel=True,
+                prefer_host=host,
+            ),
+            timeout=HOST_REFRESH_TIMEOUT,
+        )
     except Exception as e:
-        print(f"[poll] host refresh {dev['udid'][:8]}: {e}", flush=True)
+        print(f"[poll] host refresh {udid[:8]}: {e}", flush=True)
         return False
     if not better or better == host:
         return False
-    print(f"[poll] host {host!r} → {better!r} for {dev['udid'][:8]}", flush=True)
-    if not patch_device(str(dev.get("udid")), host=better):
+    print(f"[poll] host {host!r} → {better!r} for {udid[:8]}", flush=True)
+    if not patch_device(udid, host=better):
         return False
     dev["host"] = better
     return True
@@ -98,7 +126,7 @@ async def _refresh_device_host(
 async def _device_battery_live(
     rec: dict[str, Any], host: str, udid: str, dev: dict[str, Any]
 ) -> dict[str, Any]:
-    """Lockdown device read with Bonjour host refresh + one retry on timeout."""
+    """Lockdown device read with host rediscovery + one retry on timeout."""
     last_err: Exception | None = None
     use_host = host
     for attempt in range(2):
@@ -110,7 +138,7 @@ async def _device_battery_live(
         except Exception as e:
             last_err = e
             if attempt == 0 and isinstance(e, (asyncio.TimeoutError, TimeoutError, OSError)):
-                if await _refresh_device_host(dev, attempts=3, delay=1.0):
+                if await _refresh_device_host(dev):
                     use_host = str(dev["host"])
                     print(f"[poll] retry lockdown {udid[:8]} @ {use_host}", flush=True)
                     continue
@@ -119,16 +147,16 @@ async def _device_battery_live(
     raise last_err
 
 
-async def _device_battery(rec: dict[str, Any], host: str | None = None, udid: str | None = None) -> dict[str, Any]:
+async def _device_battery(rec: dict[str, Any], host: str, udid: str) -> dict[str, Any]:
     from pymobiledevice3.lockdown import create_using_tcp
 
     ld = await create_using_tcp(
-        hostname=host or HOST,
-        identifier=udid or UDID,
+        hostname=host,
+        identifier=udid,
         autopair=False,
         pair_record=rec,
         pairing_records_cache_folder=LOCKDOWN_DIR,
-        keep_alive=True,
+        keep_alive=False,
     )
     try:
         batt = await ld.get_value(domain="com.apple.mobile.battery")
@@ -136,7 +164,6 @@ async def _device_battery(rec: dict[str, Any], host: str | None = None, udid: st
         full = bool(batt.get("FullyCharged"))
         charging = bool(batt.get("BatteryIsCharging"))
         plugged = bool(batt.get("ExternalConnected"))
-        # FullyCharged can stay true after unplug — only "full"/"charging" while powered
         if charging or plugged:
             state = "full" if full else "charging"
         else:
@@ -145,7 +172,7 @@ async def _device_battery(rec: dict[str, Any], host: str | None = None, udid: st
         product = await ld.get_value(key="ProductType")
         return {
             "role": "device",
-            "kind": classify_kind(product, udid or UDID),
+            "kind": classify_kind(product, udid),
             "battery_level": int(pct) if pct is not None else None,
             "battery_state": state,
             "name": name,
@@ -274,7 +301,7 @@ async def diagnose_companion_async(udid: str, host: str | None = None) -> dict[s
     try:
         from pymobiledevice3.bonjour import browse_remotepairing
 
-        answers = await browse_remotepairing()
+        answers = await asyncio.wait_for(browse_remotepairing(), timeout=8)
         diag["bonjour_services"] = len(answers or [])
         hosts = []
         for a in answers or []:
@@ -302,7 +329,7 @@ async def diagnose_companion_async(udid: str, host: str | None = None) -> dict[s
     return diag
 
 
-async def _browse_remotepairing_services(udid: str, attempts: int = 4, delay: float = 1.2):
+async def _browse_remotepairing_services(udid: str, attempts: int = 2, delay: float = 1.2):
     """Retry Bonjour browse — RemotePairing often appears a few seconds after wake."""
     from pymobiledevice3.remote.tunnel_service import get_remote_pairing_tunnel_services
 
@@ -317,7 +344,13 @@ async def _browse_remotepairing_services(udid: str, attempts: int = 4, delay: fl
     last: list[Any] = []
     for i in range(max(1, attempts)):
         try:
-            last = list(await get_remote_pairing_tunnel_services(udid=udid) or [])
+            last = list(
+                await asyncio.wait_for(
+                    get_remote_pairing_tunnel_services(udid=udid),
+                    timeout=8,
+                )
+                or []
+            )
         except Exception as e:
             print(f"REMOTEPAIRING browse {i + 1}/{attempts}: {e}", flush=True)
             last = []
@@ -331,15 +364,18 @@ async def _browse_remotepairing_services(udid: str, attempts: int = 4, delay: fl
 async def _accessories_via_remotepairing(
     host: str | None = None, udid: str | None = None
 ) -> dict[str, Any]:
-    """List accessories (Watch, AirPods, …) exposed by a paired device via CompanionProxy."""
+    """List accessories exposed by a paired device via CompanionProxy."""
     from pymobiledevice3.remote import tunnel_service
     from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
     from pymobiledevice3.remote.userspace_tunnel import UserspaceDialPlane, UserspaceTun
     from pymobiledevice3.services.companion import CompanionProxyService
 
-    use_udid = udid or UDID
-    use_host = host or HOST
+    use_udid = str(udid or "")
+    use_host = str(host or "")
     result: dict[str, Any] = {"accessories": [], "error": None}
+    if not use_udid:
+        result["error"] = "udid required"
+        return result
 
     tunnel_service.USE_USERSPACE_TUNNEL = True
     tunnel_service.RemotePairingTcpTunnel.REQUESTED_MTU = DEFAULT_MTU
@@ -404,25 +440,27 @@ async def _accessories_via_remotepairing(
                 f"{info['battery_level']}% {info.get('battery_state')}",
                 flush=True,
             )
-            if info.get("kind") == "watch":
-                try:
-                    backup_remote_pair_records()
-                except Exception:
-                    pass
+
+        if accessories:
+            try:
+                backup_remote_pair_records()
+            except Exception:
+                pass
 
         result["accessories"] = accessories
         return result
     finally:
-        await stack.aclose()
+        try:
+            await asyncio.wait_for(stack.aclose(), timeout=5)
+        except Exception:
+            pass
         tunnel_service.USE_USERSPACE_TUNNEL = False
 
 
 async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = None) -> dict[str, Any]:
-    global UDID, HOST
-
-    udid = dev["udid"]
-    host = dev["host"]
-    UDID, HOST = udid, host
+    """Poll one USB-paired device (UDID) then optionally its companion accessories."""
+    udid = str(dev["udid"])
+    host = str(dev.get("host") or "")
     prev_entry = prev_entry or {}
     prev = device_battery(prev_entry)
     prev_level = prev.get("battery_level")
@@ -453,6 +491,7 @@ async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = 
         rec = load_pair_record(udid)
         live = await _device_battery_live(rec, host=host, udid=udid, dev=dev)
         device_ok = True
+        entry["host"] = str(dev.get("host") or host)
         entry["battery_level"] = live.get("battery_level")
         entry["battery_state"] = live.get("battery_state")
         entry["raw"] = live.get("raw")
@@ -467,6 +506,8 @@ async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = 
                 fields["name"] = entry["name"]
             if entry["product_type"]:
                 fields["product_type"] = entry["product_type"]
+            if entry.get("host"):
+                fields["host"] = entry["host"]
             if fields:
                 patch_device(udid, **fields)
         except Exception:
@@ -487,7 +528,10 @@ async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = 
 
     accessories_ok = False
     try:
-        scan = await _accessories_via_remotepairing(host=host, udid=udid)
+        scan = await asyncio.wait_for(
+            _accessories_via_remotepairing(host=entry.get("host") or host, udid=udid),
+            timeout=ACCESSORY_TIMEOUT,
+        )
         found = scan.get("accessories") or []
         if found:
             ts = datetime.now(timezone.utc).isoformat()
@@ -505,7 +549,7 @@ async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = 
         print(f"ACCESSORY_FAIL {type(e).__name__}: {e}", flush=True)
 
     if not accessories_ok:
-        entry["accessories"] = mark_accessories_stale(prev_acc)
+        entry["accessories"] = mark_accessories_stale(list(prev_acc))
 
     if errors:
         if not device_ok:
@@ -514,16 +558,17 @@ async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = 
             entry["accessories_error"] = "; ".join(
                 e for e in errors if e.startswith("accessories:")
             ) or None
+            entry["error"] = None
     return entry
 
 
 async def fetch_once() -> dict[str, Any]:
     store = load_store()
     devices = list(store.get("devices") or [])
-    # Refresh Wi‑Fi IPs from Bonjour before each poll (parallel; keep stored IPv4 if asleep)
     if devices:
         await asyncio.gather(
-            *[_refresh_device_host(dev, attempts=2, delay=0.5) for dev in devices]
+            *[_refresh_device_host(dev) for dev in devices],
+            return_exceptions=True,
         )
 
     prev = _load_prev()
@@ -541,16 +586,31 @@ async def fetch_once() -> dict[str, Any]:
         return doc
 
     errors: list[str] = []
-    entries = await asyncio.gather(
-        *[fetch_device(dev, prev_by.get(dev["udid"])) for dev in devices]
+    results = await asyncio.gather(
+        *[fetch_device(dev, prev_by.get(dev["udid"])) for dev in devices],
+        return_exceptions=True,
     )
     still = registered_udids()
-    for dev, entry in zip(devices, entries):
+    for dev, result in zip(devices, results):
         if dev.get("udid") not in still:
             continue
-        doc["devices"].append(entry)
-        if entry.get("error"):
-            errors.append(f"{dev['udid'][:8]}: {entry['error']}")
+        if isinstance(result, BaseException):
+            prev_entry = prev_by.get(dev.get("udid")) or {}
+            entry = dict(prev_entry) if prev_entry else {
+                "udid": dev.get("udid"),
+                "host": dev.get("host"),
+                "name": dev.get("name"),
+                "stale": True,
+            }
+            entry["error"] = f"{type(result).__name__}: {result}"
+            entry["stale"] = True
+            print(f"DEVICE_FAIL {type(result).__name__}: {result}", flush=True)
+            doc["devices"].append(entry)
+            errors.append(f"{str(dev.get('udid') or '')[:8]}: {entry['error']}")
+            continue
+        doc["devices"].append(result)
+        if result.get("error"):
+            errors.append(f"{dev['udid'][:8]}: {result['error']}")
 
     if not doc["devices"] and not still:
         doc["error"] = "no paired devices — open the add-on UI and tap Add"
@@ -567,10 +627,7 @@ def _write(doc: dict[str, Any]) -> None:
     if not still:
         doc["devices"] = []
         doc["error"] = "no paired devices — open the add-on UI and tap Add"
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    tmp = OUT.with_suffix(".tmp")
-    tmp.write_text(json.dumps(doc, indent=2, default=str))
-    tmp.replace(OUT)
+    write_battery_doc(doc)
     try:
         from mqtt_ha import sync_battery_doc
 
@@ -584,15 +641,13 @@ async def loop() -> None:
         store = load_store()
         poll = int(store.get("poll_seconds") or os.environ.get("IDEVICE_POLL_SEC") or 180)
         try:
-            doc = await fetch_once()
+            doc = await asyncio.wait_for(fetch_once(), timeout=FETCH_ONCE_TIMEOUT)
+        except asyncio.TimeoutError:
+            err = f"poll timed out after {int(FETCH_ONCE_TIMEOUT)}s"
+            print("FETCH_FAIL", err, flush=True)
+            doc = _stale_doc(_load_prev(), err)
         except Exception as e:
-            prev = _load_prev()
-            doc = {
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "devices": prev.get("devices") or [],
-                "path": "remotepairing-userspace-rsd",
-                "error": f"{type(e).__name__}: {e}",
-            }
+            doc = _stale_doc(_load_prev(), f"{type(e).__name__}: {e}")
             print("FETCH_FAIL", doc["error"], flush=True)
             traceback.print_exc()
         _write(doc)
@@ -600,17 +655,17 @@ async def loop() -> None:
 
 
 def main() -> int:
-    # Prefer devices.json; allow env override for one-shot tools
-    prim = primary_device()
-    global UDID, HOST
-    if prim:
-        UDID = prim["udid"]
-        HOST = prim["host"]
+    store = load_store()
     if "--once" in sys.argv:
-        if not (UDID and HOST) and not (load_store().get("devices")):
+        if not (store.get("devices") or []):
             print("No paired devices", flush=True)
             return 1
-        doc = asyncio.run(fetch_once())
+        try:
+            doc = asyncio.run(asyncio.wait_for(fetch_once(), timeout=FETCH_ONCE_TIMEOUT))
+        except Exception as e:
+            print(f"FETCH_FAIL {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
+            doc = _stale_doc(_load_prev(), f"{type(e).__name__}: {e}")
         print(json.dumps(doc, indent=2, default=str))
         _write(doc)
         return 0 if doc.get("devices") else 1

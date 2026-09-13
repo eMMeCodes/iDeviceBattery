@@ -11,11 +11,12 @@ RemotePairing RSD reads **accessories through the paired device** — not the de
 
 ## Card / sensors show old values
 
-1. Confirm `/share/idevice_battery.json` `ts` is recent
+1. Confirm `/share/idevice_battery.json` `ts` is recent (it must move every poll, even when stale)
 2. Wake the device on Wi‑Fi — sleep drops Bonjour + `:62078`
 3. Wait one poll (`poll_minutes`, default 3)
 4. Check per-device `stale` and `error` in the JSON
 5. Stale devices are **not** republished over MQTT (HA keeps the last good state)
+6. If `ts` is hours old while the app is running, the poller hung; from 0.9.29 the add-on restarts itself after two missed polls
 
 ## Device battery OK, Watch missing
 

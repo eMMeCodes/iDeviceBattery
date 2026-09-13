@@ -20,8 +20,15 @@ KIND_LABELS = {
 }
 
 
+PAIRED_DEVICE_KINDS = frozenset({"iphone", "ipad"})
+
+
 def classify_kind(product_type: str | None = None, udid: str | None = None) -> str:
-    """Map Apple ProductType / UDID prefix to a stable kind."""
+    """Map Apple ProductType / UDID prefix to a stable kind.
+
+    USB-paired rows are iPhone/iPad (role=device). Everything else from
+    CompanionProxy is an accessory (Watch, AirPods, Pencil, …).
+    """
     p = str(product_type or "")
     u = str(udid or "")
     if p.startswith("Watch") or u.startswith("00008310"):

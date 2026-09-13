@@ -136,7 +136,7 @@ def ensure_mqtt_env_from_supervisor() -> None:
         os.environ.setdefault("IDEVICE_MQTT_PASSWORD", str(info["password"]))
 
 
-def _client():
+def _client(client_id: str | None = None):
     try:
         import paho.mqtt.client as mqtt
     except ImportError as e:
@@ -144,12 +144,13 @@ def _client():
     cfg = _mqtt_env()
     if not cfg["enabled"]:
         return None, cfg
+    cid = (client_id or os.environ.get("IDEVICE_MQTT_CLIENT_ID") or "idevice_battery").strip()
     try:
         client = mqtt.Client(
-            mqtt.CallbackAPIVersion.VERSION2, client_id="idevice_battery"
+            mqtt.CallbackAPIVersion.VERSION2, client_id=cid
         )
     except AttributeError:
-        client = mqtt.Client(client_id="idevice_battery")
+        client = mqtt.Client(client_id=cid)
     if cfg["user"]:
         client.username_pw_set(cfg["user"], cfg["password"])
     client.connect(cfg["host"], cfg["port"], keepalive=30)

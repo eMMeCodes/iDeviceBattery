@@ -14,6 +14,8 @@ DATA = Path(os.environ.get("IDEVICE_DATA", "/data"))
 DEVICES_PATH = DATA / "devices.json"
 OPTS_PATH = DATA / "options.json"
 LOCK_PATH = DATA / "devices.lock"
+BATTERY_PATH = Path(os.environ.get("IDEVICE_BATTERY_JSON", "/share/idevice_battery.json"))
+BATTERY_LOCK_PATH = DATA / "battery.lock"
 
 
 def _now() -> str:
@@ -127,6 +129,42 @@ def remove_device(udid: str) -> dict[str, Any]:
         return store
 
 
+def listed_devices() -> list[dict[str, Any]]:
+    """Every paired iPhone/iPad row (identity = UDID)."""
+    return list(load_store().get("devices") or [])
+
+
 def primary_device() -> dict[str, Any] | None:
-    devices = load_store().get("devices") or []
+    devices = listed_devices()
     return devices[0] if devices else None
+
+
+@contextmanager
+def _battery_lock() -> Iterator[None]:
+    DATA.mkdir(parents=True, exist_ok=True)
+    with open(BATTERY_LOCK_PATH, "a+", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def read_battery_doc() -> dict[str, Any]:
+    with _battery_lock():
+        try:
+            if BATTERY_PATH.exists():
+                raw = json.loads(BATTERY_PATH.read_text())
+                if isinstance(raw, dict):
+                    return raw
+        except Exception:
+            pass
+        return {}
+
+
+def write_battery_doc(doc: dict[str, Any]) -> None:
+    with _battery_lock():
+        BATTERY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = BATTERY_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(doc, indent=2, default=str))
+        tmp.replace(BATTERY_PATH)

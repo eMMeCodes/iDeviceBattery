@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from devices_store import load_store, remove_device
+from devices_store import load_store, read_battery_doc, remove_device, write_battery_doc
 from pair_service import (
     finish_pair,
     get_job,
@@ -25,7 +25,6 @@ def _resolve_www() -> Path:
 
 
 WWW = _resolve_www()
-BATTERY_JSON = Path(os.environ.get("IDEVICE_BATTERY_JSON", "/share/idevice_battery.json"))
 HOST = os.environ.get("IDEVICE_UI_HOST", "0.0.0.0")
 PORT = int(os.environ.get("IDEVICE_UI_PORT", "8109"))
 
@@ -54,18 +53,18 @@ def _force_check(udid: str) -> dict[str, Any]:
     if not dev:
         raise RuntimeError("device not found")
 
-    prev: dict[str, Any] = {}
-    try:
-        if BATTERY_JSON.exists():
-            prev = json.loads(BATTERY_JSON.read_text())
-    except Exception:
-        prev = {}
-
+    prev = _read_battery()
     prev_entry = next(
         (e for e in (prev.get("devices") or []) if e.get("udid") == udid),
         {},
     )
-    entry = asyncio.run(rb.fetch_device(dev, prev_entry))
+    async def _run():
+        return await asyncio.wait_for(
+            rb.fetch_device(dev, prev_entry),
+            timeout=float(os.environ.get("IDEVICE_FETCH_TIMEOUT", "55")),
+        )
+
+    entry = asyncio.run(_run())
     from model import empty_device_entry
     from devices_store import registered_udids
 
@@ -95,10 +94,7 @@ def _force_check(udid: str) -> dict[str, Any]:
         "error": entry.get("error") if not device_ok else None,
     }
 
-    BATTERY_JSON.parent.mkdir(parents=True, exist_ok=True)
-    tmp = BATTERY_JSON.with_suffix(".tmp")
-    tmp.write_text(json.dumps(doc, indent=2, default=str))
-    tmp.replace(BATTERY_JSON)
+    _write_battery(doc)
     try:
         from mqtt_ha import sync_entry
 
@@ -127,12 +123,7 @@ def _force_discover(udid: str) -> dict[str, Any]:
     if not dev:
         raise RuntimeError("device not found")
 
-    prev: dict[str, Any] = {}
-    try:
-        if BATTERY_JSON.exists():
-            prev = json.loads(BATTERY_JSON.read_text())
-    except Exception:
-        prev = {}
+    prev = _read_battery()
     prev_entry = next(
         (e for e in (prev.get("devices") or []) if e.get("udid") == udid),
         {},
@@ -140,9 +131,13 @@ def _force_discover(udid: str) -> dict[str, Any]:
     view = device_battery(prev_entry)
     prev_acc = accessories_from_entry(prev_entry)
 
-    scan = asyncio.run(
-        rb._accessories_via_remotepairing(host=dev["host"], udid=dev["udid"])
-    )
+    async def _run():
+        return await asyncio.wait_for(
+            rb._accessories_via_remotepairing(host=dev["host"], udid=dev["udid"]),
+            timeout=float(os.environ.get("IDEVICE_ACCESSORY_TIMEOUT", "25")),
+        )
+
+    scan = asyncio.run(_run())
     now = datetime.now(timezone.utc).isoformat()
     found = scan.get("accessories") or []
     if found:
@@ -193,10 +188,7 @@ def _force_discover(udid: str) -> dict[str, Any]:
         "error": prev.get("error"),
     }
 
-    BATTERY_JSON.parent.mkdir(parents=True, exist_ok=True)
-    tmp = BATTERY_JSON.with_suffix(".tmp")
-    tmp.write_text(json.dumps(doc, indent=2, default=str))
-    tmp.replace(BATTERY_JSON)
+    _write_battery(doc)
     try:
         from mqtt_ha import sync_entry
 
@@ -207,10 +199,7 @@ def _force_discover(udid: str) -> dict[str, Any]:
 
 
 def _write_battery(doc: dict[str, Any]) -> None:
-    BATTERY_JSON.parent.mkdir(parents=True, exist_ok=True)
-    tmp = BATTERY_JSON.with_suffix(".tmp")
-    tmp.write_text(json.dumps(doc, indent=2, default=str))
-    tmp.replace(BATTERY_JSON)
+    write_battery_doc(doc)
 
 
 def _prune_battery_udid(udid: str) -> None:
@@ -253,16 +242,11 @@ def _remove_paired_device(udid: str) -> dict[str, Any]:
 
 
 def _read_battery() -> dict[str, Any]:
-    try:
-        if BATTERY_JSON.exists():
-            return json.loads(BATTERY_JSON.read_text())
-    except Exception:
-        pass
-    return {}
+    return read_battery_doc()
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "iDeviceBatteryUI/0.9.28"
+    server_version = "iDeviceBatteryUI/0.9.29"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"[ui] {self.address_string()} {fmt % args}", flush=True)
@@ -397,7 +381,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, verify_device(udid, host))
                 return
             if api == "/api/pair/wifi-host":
-                from pair_service import discover_wifi_host, _enable_wifi_connections
+                from pair_service import discover_wifi_host_async, _enable_wifi_connections
+                import asyncio
 
                 udid = str(body.get("udid") or "")
                 if not udid:
@@ -406,7 +391,12 @@ class Handler(BaseHTTPRequestHandler):
                     _enable_wifi_connections(udid)
                 except Exception:
                     pass
-                host = discover_wifi_host(udid)
+                host = asyncio.run(
+                    asyncio.wait_for(
+                        discover_wifi_host_async(udid, attempts=3, delay=1.0),
+                        timeout=30,
+                    )
+                )
                 self._json(200, {"host": host, "udid": udid})
                 return
             if api.startswith("/api/devices/") and api.endswith("/discover"):
@@ -444,6 +434,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    os.environ.setdefault("IDEVICE_MQTT_CLIENT_ID", "idevice_battery_ui")
     WWW.mkdir(parents=True, exist_ok=True)
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"[ui] listening on http://{HOST}:{PORT} www={WWW}", flush=True)
