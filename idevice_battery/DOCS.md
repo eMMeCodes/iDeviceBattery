@@ -82,13 +82,17 @@ If you reset Trust or Location & Privacy, erase the device, or wipe the app data
 
 MQTT discovery creates, per device and per accessory that reports a level:
 
-- `sensor.idevice_<key>_battery` (`%`) — **unavailable** while the last poll was stale
+- `sensor.idevice_<key>_battery` (`%`) — the last known reading, with a `stale` attribute when it is not fresh
 - `sensor.idevice_<key>_battery_state` (`charging` / `full` / `Not Charging`)
 - `sensor.idevice_<key>_last_updated` (timestamp of the last successful read)
 
 `<key>` is derived from the UDID.
 
-A poll every `poll_minutes` is an **attempt**. It is not a promise of a new percentage. Deep sleep commonly leaves a 30–70 minute gap until iOS brings Wi‑Fi lockdown or RemotePairing back. During that gap Home Assistant must not treat the last `%` as current; the battery sensors go unavailable and `last_updated` stays at the last good read.
+A poll every `poll_minutes` is an **attempt**. It is not a promise of a new percentage. Deep sleep commonly leaves a 30–70 minute gap until iOS brings Wi‑Fi lockdown or RemotePairing back.
+
+During that gap the card keeps the last percentage: a battery reading from 40 minutes ago is still useful, an empty card is not. What must not happen is passing it off as fresh, so `stale` is set on the sensor attributes and `sensor.idevice_<key>_last_updated` stays at the last successful read. Show that timestamp next to the percentage and the dashboard tells the whole truth.
+
+If you would rather see nothing than an old number, set `stale_behavior: unavailable`.
 
 Expand a card in the Web UI to copy the real `entity_id`.
 
@@ -114,6 +118,17 @@ Allowed values: `1`–`10` (minutes). Default: `3`.
 
 This interval is how often the app **tries**. A successful read still depends on iOS keeping Wi‑Fi open.
 
+### Option: `stale_behavior`
+
+What happens when a poll brings no new percentage.
+
+| Value | Effect |
+|-------|--------|
+| `last_known` (default) | The sensors keep the last percentage, flagged with the `stale` attribute and the unchanged `last_updated` |
+| `unavailable` | The battery sensors go **unavailable** until iOS answers again |
+
+Either way, if the app itself stops the sensors expire on their own (`expire_after`, three poll intervals), so a dead add-on never looks alive.
+
 ## Charging state
 
 Apple may report `BatteryIsCharging: false` while the cable is connected (`ExternalConnected: true`) during Optimized Battery Charging (~80% hold).
@@ -129,7 +144,7 @@ Leftover `FullyCharged` after unplug is treated as **Not Charging**.
 ## Known issues and limitations
 
 - **Home Assistant OS or Supervised only** (`aarch64`, `amd64`). Not Core or Container.
-- **Sleep.** Deep sleep often closes port `:62078` and Bonjour. A completed poll still rewrites the snapshot with **Stale**. MQTT battery sensors become **unavailable** until the next successful read (`last_updated` keeps the last good time). Wake the device on Wi‑Fi (unlock is not required) and wait one poll. If the Watch (or another accessory) still answers via RemotePairing, the app also tries the iPhone/iPad `%` on that same tunnel. The poller must not freeze: if the snapshot stops updating, the add-on restarts itself.
+- **Sleep.** Deep sleep often closes port `:62078` and Bonjour. A completed poll still rewrites the snapshot with **Stale**, and the MQTT sensors keep the last percentage with `stale` set (`last_updated` keeps the last good time). Wake the device on Wi‑Fi (unlock is not required) and wait one poll. If the Watch (or another accessory) still answers via RemotePairing, the app also tries the iPhone/iPad `%` on that same tunnel. The poller must not freeze: if the snapshot stops updating, the add-on restarts itself.
 - **Accessories.** Watch, headphones, Pencil, and similar appear only if the paired iPhone/iPad exposes them on CompanionProxy. They are optional. Pair USB once; accessories added later on the device are picked up on the next poll. No RemotePairing record (typical on some iPads): accessories are skipped quietly; device battery still works.
 - **Web UI.** Open it from Home Assistant (Ingress / sidebar). Direct access to port 8109 on the LAN is rejected.
 - **iOS / pymobiledevice3.** This path uses Apple protocols that can change without notice.

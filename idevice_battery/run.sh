@@ -31,6 +31,20 @@ else
 fi
 export IDEVICE_POLL_SEC="$POLL"
 
+if [ -f "$OPTS" ]; then
+  STALE="$(python3 - <<'PY'
+import json
+opts = json.load(open("/data/options.json"))
+val = str(opts.get("stale_behavior") or "last_known").strip().lower()
+print("unavailable" if val in ("unavailable", "offline") else "last_known")
+PY
+)"
+else
+  STALE=last_known
+fi
+export IDEVICE_STALE_BEHAVIOR="$STALE"
+echo "[mqtt] stale_behavior=${STALE}"
+
 # MQTT from Supervisor /share — no add-on Configuration overrides
 export IDEVICE_MQTT_ENABLED="${IDEVICE_MQTT_ENABLED:-1}"
 export IDEVICE_MQTT_HOST="${IDEVICE_MQTT_HOST:-}"

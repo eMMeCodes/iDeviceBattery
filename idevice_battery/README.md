@@ -19,7 +19,7 @@ It needs Home Assistant OS or Supervised, an MQTT broker, and a one-time USB con
 
 <b>Poll is a retry, not a new percentage.</b> The app tries every 3 minutes by default. A new % arrives only when iOS still has Wi‑Fi open.
 
-<b>Deep sleep often drops Wi‑Fi for 30–70 minutes.</b> The lock screen is fine. In Home Assistant a stale reading shows as unavailable, not as the last percentage still being true.
+<b>Deep sleep often drops Wi‑Fi for 30–70 minutes.</b> The lock screen is fine. The last percentage stays on the card, flagged stale, with a Last updated sensor that tells you how old it is.
 
 <b>Apple protocols can change with iOS.</b>
 

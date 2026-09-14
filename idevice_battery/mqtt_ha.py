@@ -238,11 +238,29 @@ def expire_after_seconds(poll_sec: int | None = None) -> int:
     return max(600, int(poll) * 3)
 
 
-def node_available(*, stale: bool, battery_level: Any) -> bool:
-    """Fresh reading with a % → available. Stale or never-read → unavailable."""
-    if stale:
+STALE_LAST_KNOWN = "last_known"
+STALE_UNAVAILABLE = "unavailable"
+
+
+def stale_behavior() -> str:
+    """What a stale poll does to the entities (add-on option `stale_behavior`)."""
+    val = (os.environ.get("IDEVICE_STALE_BEHAVIOR") or STALE_LAST_KNOWN).strip().lower()
+    return STALE_UNAVAILABLE if val in (STALE_UNAVAILABLE, "offline") else STALE_LAST_KNOWN
+
+
+def node_available(
+    *, stale: bool, battery_level: Any, behavior: str | None = None
+) -> bool:
+    """A known % keeps the entity available; the age is told by `last_updated`.
+
+    Never read → unavailable, there is nothing to show. With
+    `stale_behavior: unavailable` a stale poll hides the sensors instead.
+    """
+    if battery_level is None:
         return False
-    return battery_level is not None
+    if stale and (behavior or stale_behavior()) == STALE_UNAVAILABLE:
+        return False
+    return True
 
 
 def node_publish_plan(
@@ -258,14 +276,18 @@ def node_publish_plan(
     via_device_udid: str | None = None,
     kind: str | None = None,
     role: str | None = None,
+    behavior: str | None = None,
 ) -> dict[str, Any]:
     """What to publish for one node. Used by MQTT and unit tests.
 
-    Skipping the % topic on stale leaves the last retained value in the broker,
-    but availability=offline makes HA show *unavailable* instead of a fake live %.
+    A stale poll republishes the last known % (so `expire_after` keeps the entity
+    alive while the add-on runs) and flags `stale` with the `last_updated` of the
+    last successful read. `stale_behavior: unavailable` hides it instead.
     """
     key = udid_key(udid)
-    available = node_available(stale=stale, battery_level=battery_level)
+    available = node_available(
+        stale=stale, battery_level=battery_level, behavior=behavior
+    )
     display = name or model_label(
         product_type, "Accessory" if via_device_udid else "iDevice"
     )
@@ -395,7 +417,12 @@ def publish_node(
     if plan["last_updated"]:
         _publish(client, ts_topic, str(plan["last_updated"]))
     _publish(client, attr_topic, json.dumps(plan["attributes"]))
-    flag = "stale→unavailable" if stale else "ok"
+    if not stale:
+        flag = "ok"
+    elif plan["available"]:
+        flag = f"stale (last known {plan['battery_level']}%)"
+    else:
+        flag = "stale→unavailable"
     print(f"[mqtt] published {display} ({key[:8]}…) {flag}", flush=True)
 
 

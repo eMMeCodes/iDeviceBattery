@@ -23,6 +23,12 @@ sub_button:
     show_state: true
     show_icon: true
     show_background: true
+  # How old the percentage is: a stale reading stays visible, but dated.
+  - entity: sensor.idevice_IPHONE_last_updated
+    icon: mdi:clock-outline
+    show_state: true
+    show_icon: true
+    show_background: true
   - entity: sensor.idevice_WATCH_battery
     icon: mdi:watch
     show_state: true

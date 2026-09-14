@@ -73,8 +73,11 @@ File: `/share/idevice_battery.json` (debug snapshot).
 
 MQTT discovery (the Home Assistant path): `sensor.idevice_<udid-key>_battery` and
 `_battery_state` for each device and each accessory that reports a level.
-Stale polls set MQTT availability to offline (entity **unavailable**) and keep
-`sensor.idevice_<udid-key>_last_updated` at the last successful read.
+Stale polls republish the last known `%` with `stale` in the attributes and keep
+`sensor.idevice_<udid-key>_last_updated` at the last successful read, so freshness
+is a timestamp and not a hole. `stale_behavior: unavailable` restores the 0.9.30
+behaviour (availability offline). `expire_after` still hides everything if the
+add-on itself stops publishing.
 
 ## Home Assistant side
 

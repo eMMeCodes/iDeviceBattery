@@ -2,3 +2,9 @@ configuration:
   poll_minutes:
     name: Poll interval (minutes)
     description: How often paired devices are checked over Wi-Fi (1–10 minutes).
+  stale_behavior:
+    name: When a poll brings no new reading
+    description: >-
+      last_known keeps the last percentage on the card and flags it with the
+      Last updated sensor. unavailable hides the battery sensors until iOS
+      answers again.

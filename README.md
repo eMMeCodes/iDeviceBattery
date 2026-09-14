@@ -19,7 +19,7 @@ It needs Home Assistant OS or Supervised, an MQTT broker, and a one-time USB con
 
 **Poll is a retry, not a new percentage.** The app tries every 3 minutes by default. A new `%` arrives only when iOS still has Wi‑Fi lockdown (or RemotePairing) open.
 
-**Deep sleep often drops Wi‑Fi for 30–70 minutes.** The lock screen is fine. In Home Assistant a stale reading shows as **unavailable**, not as the last percentage still being true.
+**Deep sleep often drops Wi‑Fi for 30–70 minutes.** The lock screen is fine. The card keeps the last percentage and marks it `stale`, with `sensor.idevice_<key>_last_updated` telling you how old it is — set `stale_behavior: unavailable` to hide it instead.
 
 **The Web UI is Ingress-only** (Home Assistant login). Port 8109 is not a LAN control plane.
 

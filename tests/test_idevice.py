@@ -76,8 +76,8 @@ def test_poll_cycle_timeout_does_not_hang(monkeypatch):
     assert doc["devices"][0]["stale"] is True
 
 
-def test_mqtt_stale_is_unavailable_not_fake_live():
-    plan = node_publish_plan(
+def _stale_plan(**over):
+    args = dict(
         udid="00008030-000000000000001E",
         name="Test Phone",
         product_type="iPhone16,1",
@@ -88,11 +88,34 @@ def test_mqtt_stale_is_unavailable_not_fake_live():
         kind="iphone",
         role="device",
     )
+    args.update(over)
+    return node_publish_plan(**args)
+
+
+def test_mqtt_stale_keeps_the_last_known_percent():
+    plan = _stale_plan(behavior="last_known")
+    assert plan["available"] is True
+    assert plan["availability"] == "online"
+    assert plan["publish_battery"] is True
+    assert plan["battery_level"] == 90
+    # The card shows the age, not a hole.
+    assert plan["attributes"]["stale"] is True
+    assert plan["last_updated"] == "2026-09-13T21:59:00+00:00"
+
+
+def test_mqtt_stale_can_be_hidden_on_request():
+    plan = _stale_plan(behavior="unavailable")
     assert plan["available"] is False
     assert plan["availability"] == "offline"
     assert plan["publish_battery"] is False
     assert plan["attributes"]["stale"] is True
-    assert plan["last_updated"] == "2026-09-13T21:59:00+00:00"
+
+
+def test_mqtt_never_read_stays_unavailable():
+    for behavior in ("last_known", "unavailable"):
+        plan = _stale_plan(battery_level=None, stale=False, behavior=behavior)
+        assert plan["available"] is False
+        assert plan["publish_battery"] is False
 
 
 def test_mqtt_fresh_publishes_percent():

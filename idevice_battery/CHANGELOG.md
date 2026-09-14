@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.31 — 2026-09-14
+
+- A stale poll keeps the last known `%` on the card instead of hiding it: freshness is the `stale` attribute plus `sensor.idevice_<key>_last_updated`, not a hole where the battery used to be
+- New option `stale_behavior`: `last_known` (default) or `unavailable` for the 0.9.30 behaviour
+- The `%` is republished every poll, so `expire_after` now only hides the sensors when the app really stops publishing
+- Lovelace example shows **Last updated** next to the percentage
+- Tests cover both stale modes and the never-read case
+
 ## 0.9.30 — 2026-09-14
 
 - MQTT: stale polls mark sensors **unavailable** (availability topic + `last_updated` diagnostic). Last % stays in the broker but is no longer shown as live

@@ -9,13 +9,17 @@
 
 RemotePairing RSD is primarily how **accessories** are read through the paired device. From 0.9.30 the same tunnel is also used for the **device** `%` when `:62078` is closed.
 
+## Sensors are unavailable most of the time
+
+That was the 0.9.30 default. From 0.9.31 a stale poll keeps the last percentage and only flags it, so check `stale_behavior` in the app configuration: it must be `last_known`. If the sensors are still unavailable, the app is not publishing at all — look for `[mqtt] published` lines in the log.
+
 ## Card / sensors show old values
 
 1. Confirm `/share/idevice_battery.json` `ts` is recent (it must move every poll, even when stale)
 2. Wake the device on Wi‑Fi — sleep drops Bonjour + `:62078`
 3. Wait one poll (`poll_minutes`, default 3)
 4. Check per-device `stale` and `error` in the JSON
-5. Stale devices publish MQTT **availability = offline** (HA shows **unavailable**). The last `%` stays retained in the broker but is not treated as current. `sensor.idevice_<key>_last_updated` keeps the last successful read.
+5. Stale devices keep the last `%` with `stale: true` in the sensor attributes; `sensor.idevice_<key>_last_updated` keeps the last successful read, so an old value is visible *and* dated. With `stale_behavior: unavailable` they go **unavailable** instead.
 6. If `ts` is hours old while the app is running, the poller hung; from 0.9.29 the add-on restarts itself after two missed polls
 
 ## Device battery OK, Watch missing
