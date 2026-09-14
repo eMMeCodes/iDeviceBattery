@@ -78,8 +78,8 @@ def test_poll_cycle_timeout_does_not_hang(monkeypatch):
 
 def test_mqtt_stale_is_unavailable_not_fake_live():
     plan = node_publish_plan(
-        udid="00008120-001A21821EE8001C",
-        name="Mal9000",
+        udid="00008030-000000000000001E",
+        name="Test Phone",
         product_type="iPhone16,1",
         battery_level=90,
         battery_state="Not Charging",
@@ -98,7 +98,7 @@ def test_mqtt_stale_is_unavailable_not_fake_live():
 def test_mqtt_fresh_publishes_percent():
     plan = node_publish_plan(
         udid="PHONE",
-        name="Mal9000",
+        name="Test Phone",
         product_type="iPhone16,1",
         battery_level=85,
         battery_state="charging",
