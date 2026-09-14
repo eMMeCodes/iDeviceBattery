@@ -1,5 +1,8 @@
 # OS / editor
 .DS_Store
+._*
+.Spotlight-V100
+.Trashes
 *.swp
 *~
 .idea/
@@ -22,8 +25,29 @@ __pycache__/
 .venv/
 venv/
 
-# HA local noise
+# Home Assistant config noise — this repo lives inside a HA config share
 .storage/
+.cloud/
+.HA_VERSION
+secrets.yaml
+configuration.yaml
+automations.yaml
+scenes.yaml
+scripts.yaml
+templates.yaml
+known_devices.yaml
+home-assistant*.log*
+home-assistant*.db*
+*.db
+*.db-shm
+*.db-wal
+backups/
+deps/
+custom_components/
+tts/
+blueprints/
+themes/
+www/community/
 
 # Pytest
 .pytest_cache/

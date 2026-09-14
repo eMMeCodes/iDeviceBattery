@@ -1,0 +1,36 @@
+---
+description: Regole di commit e release per iDeviceBattery (identità, file ammessi, versione/changelog/tag)
+alwaysApply: true
+---
+
+# Commit e release — iDeviceBattery
+
+## Identità (sempre)
+
+Autore unico, nessuna mail personale:
+
+```bash
+git config user.name "eMMeCodes"
+git config user.email "68323817+eMMeCodes@users.noreply.github.com"
+git config core.hooksPath .githooks   # attiva le guardie
+```
+
+Mai `--author`, mai trailer `Co-authored-by:`, `Signed-off-by:`, né riferimenti ad agenti/AI nei messaggi.
+
+## File ammessi
+
+Solo prodotto: `idevice_battery/`, `docs/`, `homeassistant/`, `tests/`, `scripts/`, `.github/`, `.githooks/`, `.cursor/` e in root `.gitignore`, `CHANGELOG.md`, `LICENSE`, `README.md`, `repository.yaml`.
+
+Il repo vive dentro una config Home Assistant: non committare mai `secrets.yaml`, `*.db*`, `*.log`, `.storage/`, `deps/`, `custom_components/`, `*.plist`, `__pycache__/`, `.pytest_cache/`, `._*`, `.DS_Store`. Niente `git add -f` su file ignorati.
+
+## Versione, changelog, tag
+
+La versione in `idevice_battery/config.yaml` è la sola fonte di verità.
+
+1. Scrivi la sezione `## X.Y.Z — YYYY-MM-DD` **in cima** a `idevice_battery/CHANGELOG.md` (bullet brevi, impatto per l'utente).
+2. Messaggio di commit: `X.Y.Z: sommario` (max 100 caratteri, stessa versione del config).
+3. Rilascia solo con `./scripts/release.sh X.Y.Z` — bumpa il config, stampa la data di oggi, committa, crea il tag annotato e pusha `main` + tag. `DRY_RUN=1` per provare.
+4. Una versione già taggata non si riusa: il primo commit che tocca `idevice_battery/` dopo un rilascio deve bumpare la versione.
+5. Chi non tocca `idevice_battery/` (CI, hook, script, docs, README) non bumpa nulla e usa il messaggio `repo: sommario`, così non nascono release e immagini identiche.
+
+Il push del tag fa pubblicare la GitHub Release (note = sezione del changelog, contrassegnata `latest`); il push su `main` fa la build multi-arch con i tag immagine `X.Y.Z` e `latest`. Non creare release o tag a mano.

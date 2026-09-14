@@ -30,6 +30,33 @@ jobs:
           pip install pytest
           PYTHONPATH=idevice_battery pytest -q
 
+  consistency:
+    name: Version, changelog and tracked files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: App version matches the top changelog section
+        run: |
+          VERSION="$(sed -n 's/^version: *//p' "${APP}/config.yaml")"
+          TOP="$(sed -n 's/^## \([0-9.]*\) — \([0-9-]*\)$/\1 \2/p' "${APP}/CHANGELOG.md" | head -1)"
+          echo "config.yaml: ${VERSION} | changelog: ${TOP}"
+          if [[ "${TOP%% *}" != "${VERSION}" ]]; then
+            echo "top changelog section is '${TOP}', expected '${VERSION} — YYYY-MM-DD'" >&2
+            exit 1
+          fi
+
+      - name: Only product files are tracked
+        run: |
+          OUTSIDE="$(git ls-files | grep -Ev '^(idevice_battery|docs|homeassistant|tests|scripts|\.github|\.githooks|\.cursor)/|^(\.gitignore|CHANGELOG\.md|LICENSE|README\.md|repository\.yaml|AGENTS\.md)$' || true)"
+          NOISE="$(git ls-files | grep -Ei '(^|/)(secrets\.yaml|\.DS_Store|\._.*)$|\.(db|log|pyc|plist)$|__pycache__|\.pytest_cache' || true)"
+          if [[ -n "${OUTSIDE}${NOISE}" ]]; then
+            echo "these files must not be in the repository:" >&2
+            printf '%s\n%s\n' "${OUTSIDE}" "${NOISE}" | sed '/^$/d' >&2
+            exit 1
+          fi
+
   prepare:
     name: Prepare build
     runs-on: ubuntu-latest

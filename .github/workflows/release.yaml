@@ -1,0 +1,72 @@
+name: Release iDevice Battery
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Existing tag to publish (backfill)"
+        required: true
+      latest:
+        description: "Mark it as the latest release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  APP: idevice_battery
+  VERSION: ${{ inputs.version || github.ref_name }}
+
+jobs:
+  release:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ inputs.version || github.ref_name }}
+
+      - name: Check tag against app version
+        run: |
+          FOUND="$(sed -n 's/^version: *//p' "${APP}/config.yaml")"
+          if [[ "${FOUND}" != "${VERSION}" ]]; then
+            echo "tag ${VERSION} does not match ${APP}/config.yaml version ${FOUND}" >&2
+            exit 1
+          fi
+
+      - name: Extract changelog section
+        run: |
+          awk -v v="${VERSION}" '
+            $0 ~ "^## " v " " { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' "${APP}/CHANGELOG.md" > notes.md
+          sed -i '/./,$!d' notes.md
+          if [[ ! -s notes.md ]]; then
+            echo "no changelog entries for ${VERSION} in ${APP}/CHANGELOG.md" >&2
+            exit 1
+          fi
+          cat notes.md
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST: ${{ github.event_name == 'push' || inputs.latest }}
+        run: |
+          if [[ "${LATEST}" == "true" ]]; then
+            MARK="--latest"
+          else
+            MARK="--latest=false"
+          fi
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            gh release edit "${VERSION}" --title "iDevice Battery ${VERSION}" --notes-file notes.md "${MARK}"
+          else
+            gh release create "${VERSION}" --title "iDevice Battery ${VERSION}" --notes-file notes.md "${MARK}"
+          fi

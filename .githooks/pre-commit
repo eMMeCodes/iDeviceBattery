@@ -1,0 +1,60 @@
+#!/bin/sh
+# Guard rails for iDeviceBattery commits.
+#   1. author is eMMeCodes with the GitHub noreply address
+#   2. only product files are committed (no Home Assistant config, no local noise)
+#   3. the app version is bumped once per release and matches the changelog
+#
+# Enabled with: git config core.hooksPath .githooks
+set -eu
+
+NAME="eMMeCodes"
+EMAIL="68323817+eMMeCodes@users.noreply.github.com"
+CONFIG="idevice_battery/config.yaml"
+CHANGELOG="idevice_battery/CHANGELOG.md"
+
+fail() {
+	printf 'commit rifiutato: %s\n' "$1" >&2
+	exit 1
+}
+
+# 1. identity
+[ "$(git config user.name)" = "$NAME" ] || fail "user.name deve essere $NAME (git config user.name '$NAME')"
+[ "$(git config user.email)" = "$EMAIL" ] || fail "user.email deve essere $EMAIL (git config user.email '$EMAIL')"
+
+# 2. file allowlist
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -n "$staged" ] || exit 0
+
+for path in $staged; do
+	case "$path" in
+	idevice_battery/* | docs/* | homeassistant/* | tests/* | scripts/* | .github/* | .githooks/* | .cursor/*) ;;
+	.gitignore | CHANGELOG.md | LICENSE | README.md | repository.yaml | AGENTS.md) ;;
+	*) fail "'$path' non appartiene al repo (solo app, docs, tests, CI, file di root noti)" ;;
+	esac
+
+	case "$path" in
+	*secrets.yaml | *.plist | *.db | *.db-[sw]* | *.log | *.pyc | *__pycache__* | *.pytest_cache* | *.DS_Store | ._* | */._* | *.storage* | *idevice_battery.json)
+		fail "'$path' è un file locale/Home Assistant, non va nel repo"
+		;;
+	esac
+done
+
+# 3. version and changelog — only commits that touch the app ship a version
+case "$staged" in
+idevice_battery/* | *"
+idevice_battery/"*) ;;
+*) exit 0 ;;
+esac
+
+version=$(git show ":$CONFIG" | sed -n 's/^version: *//p')
+[ -n "$version" ] || fail "nessuna versione in $CONFIG"
+
+git show ":$CHANGELOG" | grep -q "^## $version " ||
+	fail "$CHANGELOG non ha una sezione '## $version — YYYY-MM-DD'"
+
+if git rev-parse -q --verify "refs/tags/$version" >/dev/null; then
+	case "$staged" in
+	*"$CONFIG"*) ;;
+	*) fail "la versione $version è già rilasciata: bumpa $CONFIG (./scripts/release.sh <versione>)" ;;
+	esac
+fi

@@ -1,0 +1,38 @@
+#!/bin/sh
+# A commit that touches the app ships a version: "<version>: <summary>".
+# A commit that only touches repo plumbing (CI, hooks, docs, scripts): "repo: <summary>".
+set -eu
+
+subject=$(sed -n '1p' "$1")
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+
+touches_app=no
+case "$staged" in
+idevice_battery/* | *"
+idevice_battery/"*) touches_app=yes ;;
+esac
+
+if [ "$touches_app" = no ]; then
+	case "$subject" in
+	"repo: "?*) ;;
+	*)
+		printf 'commit rifiutato: senza modifiche a idevice_battery/ il messaggio deve iniziare con "repo: " (trovato: "%s")\n' "$subject" >&2
+		exit 1
+		;;
+	esac
+else
+	version=$(git show ":idevice_battery/config.yaml" 2>/dev/null | sed -n 's/^version: *//p')
+	[ -n "$version" ] || version=$(sed -n 's/^version: *//p' idevice_battery/config.yaml)
+	case "$subject" in
+	"$version: "?*) ;;
+	*)
+		printf 'commit rifiutato: il messaggio deve iniziare con "%s: " (trovato: "%s")\n' "$version" "$subject" >&2
+		exit 1
+		;;
+	esac
+fi
+
+[ "${#subject}" -le 100 ] || {
+	printf 'commit rifiutato: soggetto troppo lungo (%s caratteri, max 100)\n' "${#subject}" >&2
+	exit 1
+}
