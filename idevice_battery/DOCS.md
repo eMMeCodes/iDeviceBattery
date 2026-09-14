@@ -40,11 +40,15 @@ From that page use **Open Web UI**.
 
 The sidebar also gets an **iDevice Battery** item (Ingress).
 
+That is the supported UI. Pairing and remove are not exposed on the LAN.
+
 You need an MQTT broker (Mosquitto or equivalent).
 
 This app requests `mqtt:need`.
 
-Host and credentials come from Supervisor.
+Host and credentials come from Supervisor `services/mqtt`.
+
+With `host_network` the Docker name (`core-mosquitto`) often does not resolve; the app then falls back to `127.0.0.1` (Mosquitto published on the host).
 
 Optional override file:
 
@@ -78,10 +82,13 @@ If you reset Trust or Location & Privacy, erase the device, or wipe the app data
 
 MQTT discovery creates, per device and per accessory that reports a level:
 
-- `sensor.idevice_<key>_battery` (`%`)
+- `sensor.idevice_<key>_battery` (`%`) — **unavailable** while the last poll was stale
 - `sensor.idevice_<key>_battery_state` (`charging` / `full` / `Not Charging`)
+- `sensor.idevice_<key>_last_updated` (timestamp of the last successful read)
 
 `<key>` is derived from the UDID.
+
+A poll every `poll_minutes` is an **attempt**. It is not a promise of a new percentage. Deep sleep commonly leaves a 30–70 minute gap until iOS brings Wi‑Fi lockdown or RemotePairing back. During that gap Home Assistant must not treat the last `%` as current; the battery sensors go unavailable and `last_updated` stays at the last good read.
 
 Expand a card in the Web UI to copy the real `entity_id`.
 
@@ -105,6 +112,8 @@ How often paired devices are polled over Wi‑Fi.
 
 Allowed values: `1`–`10` (minutes). Default: `3`.
 
+This interval is how often the app **tries**. A successful read still depends on iOS keeping Wi‑Fi open.
+
 ## Charging state
 
 Apple may report `BatteryIsCharging: false` while the cable is connected (`ExternalConnected: true`) during Optimized Battery Charging (~80% hold).
@@ -120,8 +129,9 @@ Leftover `FullyCharged` after unplug is treated as **Not Charging**.
 ## Known issues and limitations
 
 - **Home Assistant OS or Supervised only** (`aarch64`, `amd64`). Not Core or Container.
-- **Sleep.** Deep sleep often closes port `:62078` and Bonjour. A completed poll still rewrites the snapshot with **Stale**; MQTT is not overwritten until the next successful read. Wake the device on Wi‑Fi (unlock is not required) and wait one poll. The poller must not freeze: if the snapshot stops updating, the add-on restarts itself.
+- **Sleep.** Deep sleep often closes port `:62078` and Bonjour. A completed poll still rewrites the snapshot with **Stale**. MQTT battery sensors become **unavailable** until the next successful read (`last_updated` keeps the last good time). Wake the device on Wi‑Fi (unlock is not required) and wait one poll. If the Watch (or another accessory) still answers via RemotePairing, the app also tries the iPhone/iPad `%` on that same tunnel. The poller must not freeze: if the snapshot stops updating, the add-on restarts itself.
 - **Accessories.** Watch, headphones, Pencil, and similar appear only if the paired iPhone/iPad exposes them on CompanionProxy. They are optional. Pair USB once; accessories added later on the device are picked up on the next poll. No RemotePairing record (typical on some iPads): accessories are skipped quietly; device battery still works.
+- **Web UI.** Open it from Home Assistant (Ingress / sidebar). Direct access to port 8109 on the LAN is rejected.
 - **iOS / pymobiledevice3.** This path uses Apple protocols that can change without notice.
 
 ## Support

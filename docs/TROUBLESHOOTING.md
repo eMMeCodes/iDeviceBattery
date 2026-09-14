@@ -4,10 +4,10 @@
 
 | Target | Path | Unlock required? |
 |--------|------|------------------|
-| **iPhone / iPad battery** | Wi‑Fi lockdown TCP `:62078` + Trust plist | **No** if the device is **awake on Wi‑Fi** (screen can be locked). Deep sleep closes `:62078`. |
+| **iPhone / iPad battery** | Wi‑Fi lockdown TCP `:62078` + Trust plist, **or** RemotePairing RSD if that tunnel is up | **No** if the device is **awake on Wi‑Fi** (screen can be locked). Deep sleep closes `:62078`; RemotePairing may still work if an accessory wakes the phone. |
 | **Watch / AirPods / …** | RemotePairing → RSD → `companion_proxy` | Device must be **reachable on Bonjour**; deep sleep often blocks RemotePairing. |
 
-RemotePairing RSD reads **accessories through the paired device** — not the device’s own battery.
+RemotePairing RSD is primarily how **accessories** are read through the paired device. From 0.9.30 the same tunnel is also used for the **device** `%` when `:62078` is closed.
 
 ## Card / sensors show old values
 
@@ -15,7 +15,7 @@ RemotePairing RSD reads **accessories through the paired device** — not the de
 2. Wake the device on Wi‑Fi — sleep drops Bonjour + `:62078`
 3. Wait one poll (`poll_minutes`, default 3)
 4. Check per-device `stale` and `error` in the JSON
-5. Stale devices are **not** republished over MQTT (HA keeps the last good state)
+5. Stale devices publish MQTT **availability = offline** (HA shows **unavailable**). The last `%` stays retained in the broker but is not treated as current. `sensor.idevice_<key>_last_updated` keeps the last successful read.
 6. If `ts` is hours old while the app is running, the poller hung; from 0.9.29 the add-on restarts itself after two missed polls
 
 ## Device battery OK, Watch missing
@@ -66,8 +66,8 @@ cat /share/idevice_battery.json
 ```
 
 Useful markers: `DEVICE_OK`, `DEVICE_FAIL`, `ACCESSORY_OK`, `ACCESSORY_SKIP`,
-`ACCESSORY_FAIL`, `REMOTEPAIRING`, `TUNNEL_OK`, `RSD_OK`,
-`[mqtt] skip stale device`.
+`ACCESSORY_FAIL`, `REMOTEPAIRING`, `TUNNEL_OK`, `RSD_OK`, `RSD_DEVICE`,
+`[mqtt] published … stale→unavailable`.
 
 ### Web UI shows old battery / wrong “Charging”
 

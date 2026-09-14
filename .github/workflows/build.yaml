@@ -15,6 +15,21 @@ env:
   APP: idevice_battery
 
 jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run tests
+        run: |
+          pip install pytest
+          PYTHONPATH=idevice_battery pytest -q
+
   prepare:
     name: Prepare build
     runs-on: ubuntu-latest

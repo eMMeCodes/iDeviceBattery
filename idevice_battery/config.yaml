@@ -1,5 +1,5 @@
 name: iDevice Battery
-version: 0.9.29
+version: 0.9.30
 slug: idevice_battery
 description: "Pair iPhone or iPad over USB once, then track device and accessory battery over Wi-Fi. Publishes MQTT discovery to Home Assistant."
 url: "https://github.com/eMMeCodes/iDeviceBattery"
@@ -13,7 +13,6 @@ init: false
 startup: application
 boot: auto
 stage: experimental
-changelog: true
 watchdog: http://[HOST]:[PORT:8109]/api/status
 ingress: true
 ingress_port: 8109

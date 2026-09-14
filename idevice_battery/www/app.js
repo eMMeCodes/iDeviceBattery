@@ -62,7 +62,7 @@
     return fallbackName || "iDevice";
   }
 
-  /** e.g. Mal9000 · iPhone 15 */
+  /** e.g. Kitchen iPhone · iPhone 15 */
   function deviceTitle(name, productType, fallback) {
     const model = modelLabel(productType, fallback);
     const n = (name || "").trim() || model;
@@ -70,7 +70,7 @@
     return n;
   }
 
-  /** e.g. iPhone15,4 · 192.168.1.35 */
+  /** e.g. iPhone15,4 · 10.0.0.20 */
   function deviceMeta(productType, host) {
     const code = productType || "—";
     return host ? `${code} · ${host}` : code;

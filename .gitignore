@@ -24,3 +24,11 @@ venv/
 
 # HA local noise
 .storage/
+
+# Pytest
+.pytest_cache/
+
+# Personal drafts — not the product
+docs/PRESENTATION.md
+docs/PRESENTATION_FORUM.md
+docs/HA_APPS.md

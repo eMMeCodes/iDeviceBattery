@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.30 — 2026-09-14
+
+- MQTT: stale polls mark sensors **unavailable** (availability topic + `last_updated` diagnostic). Last % stays in the broker but is no longer shown as live
+- iPhone/iPad % from the RemotePairing RSD tunnel when lockdown `:62078` is closed but accessories still answer
+- One RemotePairing host per poll (Bonjour duplicates are closed)
+- Web UI only from Home Assistant Ingress (`172.30.32.0/23`) and localhost
+- MQTT broker host from Supervisor `services/mqtt` (fallback `127.0.0.1` on `host_network`)
+- Cache-bust query uses the running app version; drop extra `changelog:` config key
+- CI unit tests: JSON lock, poll timeout, MQTT stale plan, Ingress allowlist
+
 ## 0.9.29 — 2026-09-13
 
 - Poll never hangs the loop: whole-cycle timeout, accessory timeout, JSON always rewritten (stale on failure)

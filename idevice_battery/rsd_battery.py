@@ -147,6 +147,138 @@ async def _device_battery_live(
     raise last_err
 
 
+def _normalize_device_battery(
+    batt: dict[str, Any],
+    *,
+    udid: str,
+    name: Any = None,
+    product: Any = None,
+    source: str = "lockdown",
+) -> dict[str, Any]:
+    pct = batt.get("BatteryCurrentCapacity")
+    full = bool(batt.get("FullyCharged"))
+    charging = bool(batt.get("BatteryIsCharging"))
+    plugged = bool(batt.get("ExternalConnected"))
+    if charging or plugged:
+        state = "full" if full else "charging"
+    else:
+        state = "Not Charging"
+    return {
+        "role": "device",
+        "kind": classify_kind(product, udid),
+        "battery_level": int(pct) if pct is not None else None,
+        "battery_state": state,
+        "name": name,
+        "product_type": product,
+        "raw": batt,
+        "source": source,
+    }
+
+
+def pick_remotepairing_service(services: list[Any], prefer_host: str = "") -> Any | None:
+    """One RemotePairing endpoint: prefer stored IPv4, then best-ranked hostname.
+
+    Bonjour often returns the same phone dozens of times (n=36). Opening more
+    than one tunnel is waste, not extra coverage.
+    """
+    from pair_service import _host_rank
+
+    if not services:
+        return None
+    seen: set[tuple[str, Any]] = set()
+    unique: list[Any] = []
+    for s in services:
+        host = str(getattr(s, "hostname", "") or "")
+        port = getattr(s, "port", None)
+        key = (host, port)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(s)
+    prefer = (prefer_host or "").strip()
+    if prefer:
+        for s in unique:
+            if str(getattr(s, "hostname", "") or "") == prefer:
+                return s
+    unique.sort(
+        key=lambda s: _host_rank(str(getattr(s, "hostname", "") or ""))
+    )
+    return unique[0]
+
+
+async def _close_pairing_services(services: list[Any], keep: Any | None = None) -> None:
+    seen: set[int] = set()
+
+    async def _close_one(s: Any) -> None:
+        close = getattr(s, "close", None)
+        if not close:
+            return
+        try:
+            res = close()
+            if asyncio.iscoroutine(res):
+                await asyncio.wait_for(res, timeout=2)
+        except Exception:
+            pass
+
+    tasks = []
+    for s in services:
+        if keep is not None and s is keep:
+            continue
+        ident = id(s)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        tasks.append(_close_one(s))
+    if tasks:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=3,
+            )
+        except Exception:
+            pass
+
+
+async def _device_battery_from_rsd(rsd: Any, udid: str) -> dict[str, Any] | None:
+    """iPhone/iPad % over the same RemotePairing tunnel used for accessories."""
+    batt: Any = None
+    try:
+        batt = await rsd.get_value(domain="com.apple.mobile.battery")
+    except TypeError:
+        try:
+            batt = await rsd.get_value("com.apple.mobile.battery")
+        except Exception as e:
+            print(f"[poll] rsd battery: {e}", flush=True)
+            batt = None
+    except Exception as e:
+        print(f"[poll] rsd battery: {e}", flush=True)
+        batt = None
+    if not isinstance(batt, dict) or batt.get("BatteryCurrentCapacity") is None:
+        return None
+    name = product = None
+    try:
+        name = await rsd.get_value(key="DeviceName")
+    except Exception:
+        pass
+    try:
+        product = await rsd.get_value(key="ProductType")
+    except Exception:
+        pass
+    if not product:
+        try:
+            props = (getattr(rsd, "peer_info", None) or {}).get("Properties") or {}
+            product = props.get("ProductType")
+            name = name or props.get("DeviceName")
+        except Exception:
+            pass
+    live = _normalize_device_battery(
+        batt, udid=udid, name=name, product=product, source="remotepairing-rsd"
+    )
+    if live.get("battery_level") is None:
+        return None
+    return live
+
+
 async def _device_battery(rec: dict[str, Any], host: str, udid: str) -> dict[str, Any]:
     from pymobiledevice3.lockdown import create_using_tcp
 
@@ -160,25 +292,15 @@ async def _device_battery(rec: dict[str, Any], host: str, udid: str) -> dict[str
     )
     try:
         batt = await ld.get_value(domain="com.apple.mobile.battery")
-        pct = batt.get("BatteryCurrentCapacity")
-        full = bool(batt.get("FullyCharged"))
-        charging = bool(batt.get("BatteryIsCharging"))
-        plugged = bool(batt.get("ExternalConnected"))
-        if charging or plugged:
-            state = "full" if full else "charging"
-        else:
-            state = "Not Charging"
         name = await ld.get_value(key="DeviceName")
         product = await ld.get_value(key="ProductType")
-        return {
-            "role": "device",
-            "kind": classify_kind(product, udid),
-            "battery_level": int(pct) if pct is not None else None,
-            "battery_state": state,
-            "name": name,
-            "product_type": product,
-            "raw": batt,
-        }
+        return _normalize_device_battery(
+            batt if isinstance(batt, dict) else {},
+            udid=udid,
+            name=name,
+            product=product,
+            source="lockdown",
+        )
     finally:
         await ld.close()
 
@@ -372,7 +494,7 @@ async def _accessories_via_remotepairing(
 
     use_udid = str(udid or "")
     use_host = str(host or "")
-    result: dict[str, Any] = {"accessories": [], "error": None}
+    result: dict[str, Any] = {"accessories": [], "device": None, "error": None}
     if not use_udid:
         result["error"] = "udid required"
         return result
@@ -393,13 +515,13 @@ async def _accessories_via_remotepairing(
             raise RuntimeError(
                 "no RemotePairing on Bonjour; unlock the device and keep Wi‑Fi on"
             )
-        provider = next(
-            (s for s in services if getattr(s, "hostname", None) == use_host),
-            services[0],
-        )
+        provider = pick_remotepairing_service(services, use_host)
+        if provider is None:
+            raise RuntimeError("no RemotePairing service after dedupe")
+        await _close_pairing_services(services, keep=provider)
         print(
             f"REMOTEPAIRING host={getattr(provider, 'hostname', '?')} "
-            f"port={getattr(provider, 'port', '?')} n={len(services)}",
+            f"port={getattr(provider, 'port', '?')} n={len(services)} picked=1",
             flush=True,
         )
         stack.push_async_callback(provider.close)
@@ -419,6 +541,15 @@ async def _accessories_via_remotepairing(
         await rsd.connect()
         print("RSD_OK", flush=True)
 
+        rsd_device = await _device_battery_from_rsd(rsd, use_udid)
+        if rsd_device:
+            result["device"] = rsd_device
+            print(
+                f"RSD_DEVICE {use_udid[:8]}… "
+                f"{rsd_device.get('battery_level')}% {rsd_device.get('battery_state')}",
+                flush=True,
+            )
+
         companion = CompanionProxyService(rsd)
         listed = await companion.list()
         print(f"COMPANION_LIST {listed}", flush=True)
@@ -430,6 +561,20 @@ async def _accessories_via_remotepairing(
             dev_udid = _companion_item_udid(item)
             info = await _fetch_companion_device(companion, dev_udid)
             if not info:
+                continue
+            if info.get("udid") == use_udid:
+                if not result.get("device") and info.get("battery_level") is not None:
+                    result["device"] = {
+                        **info,
+                        "role": "device",
+                        "kind": classify_kind(info.get("product_type"), use_udid),
+                        "source": "companion",
+                    }
+                    print(
+                        f"DEVICE_OK companion {use_udid[:8]}… "
+                        f"{info['battery_level']}% {info.get('battery_state')}",
+                        flush=True,
+                    )
                 continue
             if info.get("battery_level") is None:
                 print(f"ACCESSORY_SKIP {dev_udid[:8]} no battery", flush=True)
@@ -539,6 +684,39 @@ async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = 
                 {**a, "stale": False, "updated_at": ts} for a in found
             ]
             accessories_ok = True
+        if not device_ok:
+            rsd_live = scan.get("device")
+            if (
+                isinstance(rsd_live, dict)
+                and rsd_live.get("battery_level") is not None
+            ):
+                device_ok = True
+                entry["battery_level"] = rsd_live.get("battery_level")
+                entry["battery_state"] = rsd_live.get("battery_state")
+                entry["raw"] = rsd_live.get("raw")
+                entry["name"] = rsd_live.get("name") or entry["name"]
+                entry["product_type"] = rsd_live.get("product_type") or entry["product_type"]
+                entry["kind"] = classify_kind(entry["product_type"], udid)
+                entry["stale"] = False
+                entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+                entry["error"] = None
+                errors = [e for e in errors if not e.startswith("device:")]
+                src = rsd_live.get("source") or "remotepairing-rsd"
+                try:
+                    fields: dict[str, Any] = {}
+                    if entry["name"]:
+                        fields["name"] = entry["name"]
+                    if entry["product_type"]:
+                        fields["product_type"] = entry["product_type"]
+                    if fields:
+                        patch_device(udid, **fields)
+                except Exception:
+                    pass
+                print(
+                    f"DEVICE_OK {src} {entry['kind']} {udid[:8]}… "
+                    f"{entry['battery_level']}% {entry['battery_state']}",
+                    flush=True,
+                )
         if scan.get("error") and not found:
             errors.append(f"accessories: {scan['error']}")
             print(f"ACCESSORY_FAIL {scan['error']}", flush=True)
@@ -636,20 +814,26 @@ def _write(doc: dict[str, Any]) -> None:
         print(f"[mqtt] poll sync failed: {e}", flush=True)
 
 
+async def poll_cycle() -> dict[str, Any]:
+    """One poll: timeout the whole fetch, always return a JSON-ready doc."""
+    try:
+        return await asyncio.wait_for(fetch_once(), timeout=FETCH_ONCE_TIMEOUT)
+    except asyncio.TimeoutError:
+        err = f"poll timed out after {int(FETCH_ONCE_TIMEOUT)}s"
+        print("FETCH_FAIL", err, flush=True)
+        return _stale_doc(_load_prev(), err)
+    except Exception as e:
+        doc = _stale_doc(_load_prev(), f"{type(e).__name__}: {e}")
+        print("FETCH_FAIL", doc["error"], flush=True)
+        traceback.print_exc()
+        return doc
+
+
 async def loop() -> None:
     while True:
         store = load_store()
         poll = int(store.get("poll_seconds") or os.environ.get("IDEVICE_POLL_SEC") or 180)
-        try:
-            doc = await asyncio.wait_for(fetch_once(), timeout=FETCH_ONCE_TIMEOUT)
-        except asyncio.TimeoutError:
-            err = f"poll timed out after {int(FETCH_ONCE_TIMEOUT)}s"
-            print("FETCH_FAIL", err, flush=True)
-            doc = _stale_doc(_load_prev(), err)
-        except Exception as e:
-            doc = _stale_doc(_load_prev(), f"{type(e).__name__}: {e}")
-            print("FETCH_FAIL", doc["error"], flush=True)
-            traceback.print_exc()
+        doc = await poll_cycle()
         _write(doc)
         await asyncio.sleep(poll)
 
@@ -660,12 +844,7 @@ def main() -> int:
         if not (store.get("devices") or []):
             print("No paired devices", flush=True)
             return 1
-        try:
-            doc = asyncio.run(asyncio.wait_for(fetch_once(), timeout=FETCH_ONCE_TIMEOUT))
-        except Exception as e:
-            print(f"FETCH_FAIL {type(e).__name__}: {e}", flush=True)
-            traceback.print_exc()
-            doc = _stale_doc(_load_prev(), f"{type(e).__name__}: {e}")
+        doc = asyncio.run(poll_cycle())
         print(json.dumps(doc, indent=2, default=str))
         _write(doc)
         return 0 if doc.get("devices") else 1

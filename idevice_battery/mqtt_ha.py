@@ -127,7 +127,10 @@ def ensure_mqtt_env_from_supervisor() -> None:
     if not info:
         os.environ.setdefault("IDEVICE_MQTT_HOST", "127.0.0.1")
         return
-    os.environ.setdefault("IDEVICE_MQTT_HOST", "127.0.0.1")
+    if info.get("host"):
+        os.environ.setdefault("IDEVICE_MQTT_HOST", str(info["host"]))
+    else:
+        os.environ.setdefault("IDEVICE_MQTT_HOST", "127.0.0.1")
     if info.get("port"):
         os.environ.setdefault("IDEVICE_MQTT_PORT", str(info["port"]))
     if info.get("username"):
@@ -153,7 +156,20 @@ def _client(client_id: str | None = None):
         client = mqtt.Client(client_id=cid)
     if cfg["user"]:
         client.username_pw_set(cfg["user"], cfg["password"])
-    client.connect(cfg["host"], cfg["port"], keepalive=30)
+    host = cfg["host"]
+    try:
+        client.connect(host, cfg["port"], keepalive=30)
+    except Exception as e:
+        if host not in ("127.0.0.1", "localhost"):
+            print(
+                f"[mqtt] connect {host!r} failed ({e}); retry 127.0.0.1 "
+                "(host_network often cannot resolve core-mosquitto)",
+                flush=True,
+            )
+            client.connect("127.0.0.1", cfg["port"], keepalive=30)
+            cfg["host"] = "127.0.0.1"
+        else:
+            raise
     client.loop_start()
     return client, cfg
 
@@ -202,6 +218,82 @@ def _discovery_topics(component: str, object_id: str) -> str:
     return f"{DISCOVERY_PREFIX}/{component}/{object_id}/config"
 
 
+AVAIL_ONLINE = "online"
+AVAIL_OFFLINE = "offline"
+
+
+def availability_topic(key: str) -> str:
+    return f"{TOPIC_ROOT}/{key}/availability"
+
+
+def last_updated_topic(key: str) -> str:
+    return f"{TOPIC_ROOT}/{key}/last_updated"
+
+
+def expire_after_seconds(poll_sec: int | None = None) -> int:
+    """If the add-on dies mid-stale, HA still expires the last retained %."""
+    poll = poll_sec
+    if poll is None:
+        poll = int(os.environ.get("IDEVICE_POLL_SEC") or 180)
+    return max(600, int(poll) * 3)
+
+
+def node_available(*, stale: bool, battery_level: Any) -> bool:
+    """Fresh reading with a % → available. Stale or never-read → unavailable."""
+    if stale:
+        return False
+    return battery_level is not None
+
+
+def node_publish_plan(
+    *,
+    udid: str,
+    name: str,
+    product_type: str,
+    battery_level: Any,
+    battery_state: Any,
+    stale: bool = False,
+    last_updated: str | None = None,
+    error: str | None = None,
+    via_device_udid: str | None = None,
+    kind: str | None = None,
+    role: str | None = None,
+) -> dict[str, Any]:
+    """What to publish for one node. Used by MQTT and unit tests.
+
+    Skipping the % topic on stale leaves the last retained value in the broker,
+    but availability=offline makes HA show *unavailable* instead of a fake live %.
+    """
+    key = udid_key(udid)
+    available = node_available(stale=stale, battery_level=battery_level)
+    display = name or model_label(
+        product_type, "Accessory" if via_device_udid else "iDevice"
+    )
+    return {
+        "key": key,
+        "display": display,
+        "available": available,
+        "availability": AVAIL_ONLINE if available else AVAIL_OFFLINE,
+        "publish_battery": available and battery_level is not None,
+        "publish_state": available and battery_state is not None,
+        "battery_level": int(battery_level) if battery_level is not None else None,
+        "battery_state": battery_state,
+        "last_updated": last_updated,
+        "attributes": {
+            "udid": udid,
+            "name": display,
+            "product_type": product_type or None,
+            "model": model_label(product_type),
+            "role": role or ("accessory" if via_device_udid else "device"),
+            "kind": kind,
+            "via_device_udid": via_device_udid,
+            "stale": bool(stale),
+            "last_updated": last_updated,
+            "error": error or None,
+        },
+    }
+
+
 def publish_node(
     client,
     *,
@@ -213,19 +305,42 @@ def publish_node(
     via_device_udid: str | None = None,
     kind: str | None = None,
     role: str | None = None,
+    stale: bool = False,
+    last_updated: str | None = None,
+    error: str | None = None,
 ) -> None:
-    key = udid_key(udid)
+    plan = node_publish_plan(
+        udid=udid,
+        name=name,
+        product_type=product_type,
+        battery_level=battery_level,
+        battery_state=battery_state,
+        stale=stale,
+        last_updated=last_updated,
+        error=error,
+        via_device_udid=via_device_udid,
+        kind=kind,
+        role=role,
+    )
+    key = plan["key"]
+    display = plan["display"]
     state_batt = f"{TOPIC_ROOT}/{key}/battery"
     state_chg = f"{TOPIC_ROOT}/{key}/battery_state"
     attr_topic = f"{TOPIC_ROOT}/{key}/attributes"
+    avail_topic = availability_topic(key)
+    ts_topic = last_updated_topic(key)
+    expire = expire_after_seconds()
 
     if via_device_udid:
         device = _acc_device_block(udid, name, product_type, via_device_udid)
-        display = name or model_label(product_type, "Accessory")
     else:
         device = _ha_device_block(udid, name, product_type)
-        display = name or model_label(product_type)
 
+    avail = {
+        "availability_topic": avail_topic,
+        "payload_available": AVAIL_ONLINE,
+        "payload_not_available": AVAIL_OFFLINE,
+    }
     batt_cfg = {
         "name": "Battery",
         "unique_id": f"idevice_{key}_battery",
@@ -235,7 +350,9 @@ def publish_node(
         "unit_of_measurement": "%",
         "device_class": "battery",
         "state_class": "measurement",
+        "expire_after": expire,
         "device": device,
+        **avail,
     }
     state_cfg = {
         "name": "Battery state",
@@ -244,6 +361,17 @@ def publish_node(
         "state_topic": state_chg,
         "json_attributes_topic": attr_topic,
         "icon": "mdi:battery-charging",
+        "expire_after": expire,
+        "device": device,
+        **avail,
+    }
+    ts_cfg = {
+        "name": "Last updated",
+        "unique_id": f"idevice_{key}_last_updated",
+        "object_id": f"idevice_{key}_last_updated",
+        "state_topic": ts_topic,
+        "device_class": "timestamp",
+        "entity_category": "diagnostic",
         "device": device,
     }
 
@@ -253,37 +381,34 @@ def publish_node(
         _discovery_topics("sensor", f"idevice_{key}_battery_state"),
         json.dumps(state_cfg),
     )
-
-    if battery_level is not None:
-        _publish(client, state_batt, str(int(battery_level)))
-    if battery_state is not None:
-        _publish(client, state_chg, str(battery_state))
     _publish(
         client,
-        attr_topic,
-        json.dumps(
-            {
-                "udid": udid,
-                "name": display,
-                "product_type": product_type or None,
-                "model": model_label(product_type),
-                "role": role or ("accessory" if via_device_udid else "device"),
-                "kind": kind,
-                "via_device_udid": via_device_udid,
-            }
-        ),
+        _discovery_topics("sensor", f"idevice_{key}_last_updated"),
+        json.dumps(ts_cfg),
     )
-    print(f"[mqtt] published {display} ({key[:8]}…)", flush=True)
+
+    _publish(client, avail_topic, plan["availability"])
+    if plan["publish_battery"]:
+        _publish(client, state_batt, str(plan["battery_level"]))
+    if plan["publish_state"]:
+        _publish(client, state_chg, str(plan["battery_state"]))
+    if plan["last_updated"]:
+        _publish(client, ts_topic, str(plan["last_updated"]))
+    _publish(client, attr_topic, json.dumps(plan["attributes"]))
+    flag = "stale→unavailable" if stale else "ok"
+    print(f"[mqtt] published {display} ({key[:8]}…) {flag}", flush=True)
 
 
 def unpublish_node(client, udid: str) -> None:
     key = udid_key(udid)
-    for suffix in ("battery", "battery_state"):
+    for suffix in ("battery", "battery_state", "last_updated"):
         _publish(client, _discovery_topics("sensor", f"idevice_{key}_{suffix}"), "")
     for topic in (
         f"{TOPIC_ROOT}/{key}/battery",
         f"{TOPIC_ROOT}/{key}/battery_state",
         f"{TOPIC_ROOT}/{key}/attributes",
+        availability_topic(key),
+        last_updated_topic(key),
     ):
         _publish(client, topic, "")
     print(f"[mqtt] unpublished {key[:8]}…", flush=True)
@@ -324,39 +449,24 @@ def sync_entry(entry: dict[str, Any]) -> None:
             return
         name = view.get("name") or device_udid[:8]
         product_type = view.get("product_type") or ""
-        if view.get("stale"):
-            print(f"[mqtt] skip stale device {view.get('kind')} {device_udid[:8]}…", flush=True)
-        elif view.get("battery_level") is not None:
-            publish_node(
-                client,
-                udid=device_udid,
-                name=name,
-                product_type=product_type,
-                battery_level=view.get("battery_level"),
-                battery_state=view.get("battery_state") or "unknown",
-                kind=view.get("kind"),
-                role="device",
-            )
-        else:
-            publish_node(
-                client,
-                udid=device_udid,
-                name=name,
-                product_type=product_type,
-                battery_level=None,
-                battery_state=None,
-                kind=view.get("kind"),
-                role="device",
-            )
+        publish_node(
+            client,
+            udid=device_udid,
+            name=name,
+            product_type=product_type,
+            battery_level=view.get("battery_level"),
+            battery_state=view.get("battery_state") or "unknown",
+            kind=view.get("kind"),
+            role="device",
+            stale=bool(view.get("stale")),
+            last_updated=view.get("updated_at"),
+            error=view.get("error"),
+        )
 
         for a in accessories_from_entry(entry):
-            if a.get("stale"):
-                print(
-                    f"[mqtt] skip stale accessory {a.get('kind')} via {device_udid[:8]}…",
-                    flush=True,
-                )
+            if not a.get("udid"):
                 continue
-            if not a.get("udid") or a.get("battery_level") is None:
+            if a.get("battery_level") is None and not a.get("stale"):
                 continue
             publish_node(
                 client,
@@ -368,6 +478,8 @@ def sync_entry(entry: dict[str, Any]) -> None:
                 via_device_udid=device_udid,
                 kind=a.get("kind"),
                 role="accessory",
+                stale=bool(a.get("stale")),
+                last_updated=a.get("updated_at"),
             )
     finally:
         _disconnect(client)

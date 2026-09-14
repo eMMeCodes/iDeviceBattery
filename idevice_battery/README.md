@@ -17,7 +17,9 @@ This app is experimental.
 
 It needs Home Assistant OS or Supervised, an MQTT broker, and a one-time USB connection.
 
-<b>Deep sleep often drops Wi‑Fi lockdown until the device wakes (the lock screen is fine).</b>
+<b>Poll is a retry, not a new percentage.</b> The app tries every 3 minutes by default. A new % arrives only when iOS still has Wi‑Fi open.
+
+<b>Deep sleep often drops Wi‑Fi for 30–70 minutes.</b> The lock screen is fine. In Home Assistant a stale reading shows as unavailable, not as the last percentage still being true.
 
 <b>Apple protocols can change with iOS.</b>
 

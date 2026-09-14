@@ -17,7 +17,11 @@ This app is experimental.
 
 It needs Home Assistant OS or Supervised, an MQTT broker, and a one-time USB connection.
 
-**Deep sleep often drops Wi‑Fi lockdown until the device wakes (the lock screen is fine).**
+**Poll is a retry, not a new percentage.** The app tries every 3 minutes by default. A new `%` arrives only when iOS still has Wi‑Fi lockdown (or RemotePairing) open.
+
+**Deep sleep often drops Wi‑Fi for 30–70 minutes.** The lock screen is fine. In Home Assistant a stale reading shows as **unavailable**, not as the last percentage still being true.
+
+**The Web UI is Ingress-only** (Home Assistant login). Port 8109 is not a LAN control plane.
 
 **Apple protocols can change with iOS.**
 
@@ -60,6 +64,8 @@ This app uses RemotePairing + RSD.
 ```text
 idevice_battery/     Home Assistant app (config, image, Web UI)
 docs/                Architecture, pairing CLI, troubleshooting
+homeassistant/       Example Lovelace card
+tests/               Unit tests (run in CI)
 ```
 
 ## Docs
@@ -67,10 +73,13 @@ docs/                Architecture, pairing CLI, troubleshooting
 - [Architecture](docs/ARCHITECTURE.md)
 - [Pairing (CLI)](docs/PAIRING.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Forum presentation (editable)](docs/PRESENTATION.md)
-- [Forum paste body](docs/PRESENTATION_FORUM.md)
-- [Home Assistant Apps spec / sharing](docs/HA_APPS.md)
-- [Changelog](CHANGELOG.md)
+- [Changelog](idevice_battery/CHANGELOG.md)
+
+## Dashboard
+
+Example [Bubble Card](homeassistant/lovelace/bubble_card_example.yaml) with a device and one accessory.
+
+Replace the placeholder `entity_id`s with the ones shown in the app Web UI.
 
 ## License
 

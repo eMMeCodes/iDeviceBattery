@@ -2,9 +2,11 @@
 """Ingress web UI + JSON API for iDevice Battery (Ingress port 8109)."""
 from __future__ import annotations
 
+import ipaddress
 import json
 import mimetypes
 import os
+import re
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,6 +41,51 @@ def _addon_version() -> str:
 
 
 ADDON_VERSION = _addon_version()
+
+# Supervisor Ingress source (docs: only 172.30.32.2). /23 covers the hassio net.
+# Loopback: Supervisor watchdog with host_network.
+_INGRESS_NETS = (
+    ipaddress.ip_network("172.30.32.0/23"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+)
+
+
+def parse_client_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    ip = ipaddress.ip_address(host)
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
+
+
+def client_allowed(client_ip: str, *, allow_lan: bool | None = None) -> bool:
+    """True if this peer may use the UI (Ingress / localhost / explicit allow)."""
+    if allow_lan is None:
+        allow_lan = os.environ.get("IDEVICE_UI_ALLOW_LAN", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+    if allow_lan:
+        return True
+    try:
+        ip = parse_client_ip(client_ip)
+    except ValueError:
+        return False
+    extra = os.environ.get("IDEVICE_UI_ALLOW_IPS", "")
+    for token in extra.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            if "/" in token:
+                if ip in ipaddress.ip_network(token, strict=False):
+                    return True
+            elif ip == ipaddress.ip_address(token):
+                return True
+        except ValueError:
+            continue
+    return any(ip in net for net in _INGRESS_NETS)
 
 
 def _force_check(udid: str) -> dict[str, Any]:
@@ -246,10 +293,25 @@ def _read_battery() -> dict[str, Any]:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "iDeviceBatteryUI/0.9.29"
+    server_version = f"iDeviceBatteryUI/{ADDON_VERSION}"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"[ui] {self.address_string()} {fmt % args}", flush=True)
+
+    def _peer_allowed(self) -> bool:
+        host = self.client_address[0] if self.client_address else ""
+        if client_allowed(host):
+            return True
+        print(f"[ui] deny {host} (Ingress/localhost only)", flush=True)
+        return False
+
+    def _forbidden(self) -> None:
+        body = b'{"error":"forbidden","hint":"open the UI via Home Assistant Ingress"}'
+        self.send_response(403)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _cors(self) -> None:
         self.send_header("Cache-Control", "no-store")
@@ -282,6 +344,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         data = path.read_bytes()
+        if path.name == "index.html":
+            data = re.sub(
+                rb"\?v=[A-Za-z0-9._-]+",
+                f"?v={ADDON_VERSION}".encode(),
+                data,
+            )
         ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", ctype)
@@ -291,6 +359,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self) -> None:  # noqa: N802
+        if not self._peer_allowed():
+            self._forbidden()
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         # Ingress may strip prefix; also accept nested paths
@@ -334,6 +405,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(500, {"error": str(e)})
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._peer_allowed():
+            self._forbidden()
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         api = path if path.startswith("/api/") else (
@@ -418,6 +492,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": str(e)})
 
     def do_DELETE(self) -> None:  # noqa: N802
+        if not self._peer_allowed():
+            self._forbidden()
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         api = path if path.startswith("/api/") else (
@@ -437,7 +514,13 @@ def main() -> None:
     os.environ.setdefault("IDEVICE_MQTT_CLIENT_ID", "idevice_battery_ui")
     WWW.mkdir(parents=True, exist_ok=True)
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"[ui] listening on http://{HOST}:{PORT} www={WWW}", flush=True)
+    lan = os.environ.get("IDEVICE_UI_ALLOW_LAN", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    mode = "LAN open (IDEVICE_UI_ALLOW_LAN)" if lan else "Ingress + localhost only"
+    print(f"[ui] listening on http://{HOST}:{PORT} www={WWW} access={mode}", flush=True)
     httpd.serve_forever()
 
 

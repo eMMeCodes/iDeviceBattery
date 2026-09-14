@@ -40,11 +40,12 @@ That stack rides **Apple usbmuxd**. There is no public Apple usbmuxd for Linux.
 HA add-on (host_network)
   │
   ├─ Device battery (iPhone / iPad)
-  │    TCP device:62078 + /data/lockdown/<UDID>.plist
-  │    → create_using_tcp → domain com.apple.mobile.battery
+  │    1. TCP device:62078 + /data/lockdown/<UDID>.plist
+  │       → create_using_tcp → domain com.apple.mobile.battery
+  │    2. If that fails: same RemotePairing RSD tunnel as accessories
   │
   └─ Accessory battery (Watch, …)
-       Bonjour RemotePairing service for device UDID
+       Bonjour RemotePairing service for device UDID (one host, duplicates dropped)
        → userspace CDTunnel (pymobiledevice3)
        → RemoteServiceDiscovery (RSD)
        → CompanionProxyService
@@ -72,6 +73,8 @@ File: `/share/idevice_battery.json` (debug snapshot).
 
 MQTT discovery (the Home Assistant path): `sensor.idevice_<udid-key>_battery` and
 `_battery_state` for each device and each accessory that reports a level.
+Stale polls set MQTT availability to offline (entity **unavailable**) and keep
+`sensor.idevice_<udid-key>_last_updated` at the last successful read.
 
 ## Home Assistant side
 

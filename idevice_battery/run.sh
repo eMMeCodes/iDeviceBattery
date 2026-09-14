@@ -46,8 +46,9 @@ try:
     data = json.loads(os.environ["MQTT_JSON"]).get("data") or {}
 except Exception:
     data = {}
-if not os.environ.get("IDEVICE_MQTT_HOST"):
-    print(f"export IDEVICE_MQTT_HOST={shlex.quote('127.0.0.1')}")
+host = data.get("host")
+if host and not os.environ.get("IDEVICE_MQTT_HOST"):
+    print(f"export IDEVICE_MQTT_HOST={shlex.quote(str(host))}")
 if data.get("port") and not os.environ.get("IDEVICE_MQTT_PORT"):
     print(f"export IDEVICE_MQTT_PORT={shlex.quote(str(data['port']))}")
 if data.get("username"):
