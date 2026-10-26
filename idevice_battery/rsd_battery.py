@@ -31,6 +31,7 @@ from model import (
     classify_kind,
     device_battery,
     mark_accessories_stale,
+    merge_accessories,
     normalize_accessory,
 )
 
@@ -40,6 +41,13 @@ LOCKDOWN_TIMEOUT = float(os.environ.get("IDEVICE_LOCKDOWN_TIMEOUT", "20"))
 ACCESSORY_TIMEOUT = float(os.environ.get("IDEVICE_ACCESSORY_TIMEOUT", "25"))
 FETCH_ONCE_TIMEOUT = float(os.environ.get("IDEVICE_FETCH_TIMEOUT", "55"))
 HOST_REFRESH_TIMEOUT = float(os.environ.get("IDEVICE_HOST_REFRESH_TIMEOUT", "12"))
+CONNECT_TIMEOUT = float(os.environ.get("IDEVICE_CONNECT_TIMEOUT", "4"))
+
+# One Bonjour browse and one accessory teardown at a time. Cancelling either
+# leaves the SSL fd open (Python 3.10 wait_for); the next poll died on EMFILE.
+_browse_task: asyncio.Task | None = None
+_accessory_inflight: asyncio.Task | None = None
+_accessory_cleanup: asyncio.Task | None = None
 
 
 def _ensure_pem(data: bytes, kind: str) -> bytes:
@@ -131,10 +139,7 @@ async def _device_battery_live(
     use_host = host
     for attempt in range(2):
         try:
-            return await asyncio.wait_for(
-                _device_battery(rec, host=use_host, udid=udid),
-                timeout=LOCKDOWN_TIMEOUT,
-            )
+            return await _device_battery(rec, host=use_host, udid=udid)
         except Exception as e:
             last_err = e
             if attempt == 0 and isinstance(e, (asyncio.TimeoutError, TimeoutError, OSError)):
@@ -206,37 +211,157 @@ def pick_remotepairing_service(services: list[Any], prefer_host: str = "") -> An
     return unique[0]
 
 
-async def _close_pairing_services(services: list[Any], keep: Any | None = None) -> None:
-    seen: set[int] = set()
-
-    async def _close_one(s: Any) -> None:
-        close = getattr(s, "close", None)
-        if not close:
-            return
+async def _close_one(obj: Any) -> None:
+    """Close one Apple client. Caller must not cancel this coroutine."""
+    if obj is None:
+        return
+    writer = None
+    if isinstance(obj, tuple) and len(obj) == 2 and hasattr(obj[1], "close"):
+        writer = obj[1]
+    if writer is not None:
         try:
-            res = close()
-            if asyncio.iscoroutine(res):
-                await asyncio.wait_for(res, timeout=2)
+            writer.close()
+            wait = getattr(writer, "wait_closed", None)
+            if wait:
+                await wait()
         except Exception:
             pass
+        return
+    close = getattr(obj, "close", None)
+    if close is None:
+        service = getattr(obj, "service", None)
+        if service is not None and service is not obj:
+            await _close_one(service)
+        return
+    try:
+        res = close()
+        if asyncio.iscoroutine(res):
+            await res
+    except Exception:
+        pass
 
-    tasks = []
-    for s in services:
-        if keep is not None and s is keep:
+
+def close_later(obj: Any) -> None:
+    """Schedule a close that survives cancellation of the current task."""
+    if obj is None:
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    asyncio.create_task(_close_one(obj))
+
+
+async def _close_task_result(task: asyncio.Task) -> None:
+    try:
+        if task.cancelled():
+            return
+        result = task.result()
+    except Exception:
+        return
+    await _close_one(result)
+
+
+async def settle(
+    task: asyncio.Task,
+    timeout: float,
+    *,
+    on_abandon: Any = None,
+) -> Any:
+    """Wait without cancelling ``task``.
+
+    ``asyncio.wait_for`` cancels the handshake. SSL ``wait_closed`` then never
+    runs and the fd stays open until the process hits EMFILE. On timeout or
+    cancellation the task keeps running; ``on_abandon`` (or a close of the
+    result) runs when it finishes.
+    """
+
+    def abandon(done: asyncio.Task) -> None:
+        if on_abandon is not None:
+            try:
+                on_abandon()
+            except Exception:
+                pass
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        asyncio.create_task(_close_task_result(done))
+
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=timeout)
+    except asyncio.CancelledError:
+        if task.done():
+            abandon(task)
+        else:
+            task.add_done_callback(abandon)
+        raise
+    if task not in done:
+        task.add_done_callback(abandon)
+        return None
+    if task.cancelled():
+        return None
+    exc = task.exception()
+    if exc is not None:
+        raise exc
+    return task.result()
+
+
+async def wait_owned(coro: Any, timeout: float, *, on_abandon: Any = None) -> Any:
+    return await settle(asyncio.create_task(coro), timeout, on_abandon=on_abandon)
+
+
+async def _close_pairing_services(services: list[Any], keep: Any | None = None) -> None:
+    """Close each socket on its own, without a shared timeout that cancels them all."""
+    seen: set[int] = set()
+    for service in services:
+        if keep is not None and service is keep:
             continue
-        ident = id(s)
+        ident = id(service)
         if ident in seen:
             continue
         seen.add(ident)
-        tasks.append(_close_one(s))
-    if tasks:
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*tasks, return_exceptions=True),
-                timeout=3,
-            )
-        except Exception:
-            pass
+        await _close_one(service)
+
+
+def remotepairing_endpoints(
+    answers: list[Any], prefer_host: str = ""
+) -> list[tuple[str, int]]:
+    """Unique Bonjour endpoints. Saved IPv4 first, then other IPv4. No socket."""
+    from pair_service import _host_rank
+
+    seen: set[tuple[str, int]] = set()
+    out: list[tuple[str, int]] = []
+    for answer in answers or []:
+        port = getattr(answer, "port", None)
+        if not isinstance(port, int):
+            continue
+        ips: list[str] = []
+        for address in getattr(answer, "addresses", None) or []:
+            ip = getattr(address, "full_ip", None) or getattr(address, "ip", None)
+            if ip:
+                ips.append(str(ip))
+        host = str(getattr(answer, "host", "") or "").rstrip(".")
+        if host:
+            ips.append(host)
+        for ip in ips:
+            if _host_rank(ip) >= 9:
+                continue
+            key = (ip, port)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+    prefer = (prefer_host or "").strip()
+    out.sort(
+        key=lambda item: (
+            0 if prefer and item[0] == prefer else 1,
+            _host_rank(item[0]),
+            item[0],
+        )
+    )
+    return out
 
 
 async def _device_battery_from_rsd(rsd: Any, udid: str) -> dict[str, Any] | None:
@@ -282,18 +407,41 @@ async def _device_battery_from_rsd(rsd: Any, udid: str) -> dict[str, Any] | None
 async def _device_battery(rec: dict[str, Any], host: str, udid: str) -> dict[str, Any]:
     from pymobiledevice3.lockdown import create_using_tcp
 
-    ld = await create_using_tcp(
-        hostname=host,
-        identifier=udid,
-        autopair=False,
-        pair_record=rec,
-        pairing_records_cache_folder=LOCKDOWN_DIR,
-        keep_alive=False,
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + LOCKDOWN_TIMEOUT
+
+    def remaining() -> float:
+        return max(0.1, deadline - loop.time())
+
+    ld = await wait_owned(
+        create_using_tcp(
+            hostname=host,
+            identifier=udid,
+            autopair=False,
+            pair_record=rec,
+            pairing_records_cache_folder=LOCKDOWN_DIR,
+            keep_alive=False,
+        ),
+        remaining(),
     )
-    try:
+    if ld is None:
+        raise TimeoutError(f"lockdown connect {host}")
+
+    async def _read() -> tuple[Any, Any, Any]:
         batt = await ld.get_value(domain="com.apple.mobile.battery")
         name = await ld.get_value(key="DeviceName")
         product = await ld.get_value(key="ProductType")
+        return batt, name, product
+
+    # Own the client only after the read returns. A timeout leaves the read
+    # running; its done-callback closes the client when the read finishes.
+    release = True
+    try:
+        got = await wait_owned(_read(), remaining(), on_abandon=lambda: close_later(ld))
+        if got is None:
+            release = False
+            raise TimeoutError(f"lockdown read {host}")
+        batt, name, product = got
         return _normalize_device_battery(
             batt if isinstance(batt, dict) else {},
             udid=udid,
@@ -301,8 +449,12 @@ async def _device_battery(rec: dict[str, Any], host: str, udid: str) -> dict[str
             product=product,
             source="lockdown",
         )
+    except asyncio.CancelledError:
+        release = False
+        raise
     finally:
-        await ld.close()
+        if release:
+            close_later(ld)
 
 
 async def _fetch_companion_device(
@@ -421,9 +573,7 @@ async def diagnose_companion_async(udid: str, host: str | None = None) -> dict[s
         diag["remote_list_error"] = str(e)
 
     try:
-        from pymobiledevice3.bonjour import browse_remotepairing
-
-        answers = await asyncio.wait_for(browse_remotepairing(), timeout=8)
+        answers = await _browse_answers()
         diag["bonjour_services"] = len(answers or [])
         hosts = []
         for a in answers or []:
@@ -451,9 +601,39 @@ async def diagnose_companion_async(udid: str, host: str | None = None) -> dict[s
     return diag
 
 
-async def _browse_remotepairing_services(udid: str, attempts: int = 2, delay: float = 1.2):
-    """Retry Bonjour browse — RemotePairing often appears a few seconds after wake."""
-    from pymobiledevice3.remote.tunnel_service import get_remote_pairing_tunnel_services
+async def _browse_answers() -> list[Any]:
+    """One Bonjour browse. A browse already in flight is left alone."""
+    global _browse_task
+    if _browse_task is not None and not _browse_task.done():
+        print("REMOTEPAIRING browse still in flight", flush=True)
+        return []
+    from pymobiledevice3.bonjour import browse_remotepairing
+
+    _browse_task = asyncio.create_task(browse_remotepairing(timeout=4.0))
+    try:
+        answers = await settle(_browse_task, 5)
+    except Exception as e:
+        print(f"REMOTEPAIRING browse: {e}", flush=True)
+        return []
+    return list(answers or [])
+
+
+async def _browse_remotepairing_services(
+    udid: str,
+    prefer_host: str = "",
+    attempts: int = 2,
+    delay: float = 1.2,
+):
+    """One live RemotePairing socket, saved Wi‑Fi address first.
+
+    ``get_remote_pairing_tunnel_services`` connects every Bonjour address and
+    returns them all (this phone has been n=40). Those fds stayed open after
+    the 3s close and the poller hit ``Too many open files`` on the lock files.
+    A second browse runs only when the first saw no endpoints.
+    """
+    from pymobiledevice3.remote.tunnel_service import (
+        create_core_device_tunnel_service_using_remotepairing,
+    )
 
     if not has_remote_pair_record(udid):
         print(
@@ -463,30 +643,65 @@ async def _browse_remotepairing_services(udid: str, attempts: int = 2, delay: fl
         )
         return []
 
-    last: list[Any] = []
     for i in range(max(1, attempts)):
-        try:
-            last = list(
-                await asyncio.wait_for(
-                    get_remote_pairing_tunnel_services(udid=udid),
-                    timeout=8,
-                )
-                or []
+        answers = await _browse_answers()
+        endpoints = remotepairing_endpoints(answers, prefer_host)
+        if not endpoints:
+            print(
+                f"REMOTEPAIRING browse {i + 1}/{attempts}: no endpoints",
+                flush=True,
             )
-        except Exception as e:
-            print(f"REMOTEPAIRING browse {i + 1}/{attempts}: {e}", flush=True)
-            last = []
-        if last:
-            return last
-        if i + 1 < attempts:
-            await asyncio.sleep(delay)
-    return last
+            # A browse that has not finished yet will not grow new answers
+            # on a second call; leave that task alone.
+            if _browse_task is not None and not _browse_task.done():
+                return []
+            if i + 1 < attempts:
+                await asyncio.sleep(delay)
+            continue
+        for host, port in endpoints[:2]:
+            try:
+                conn = await wait_owned(
+                    create_core_device_tunnel_service_using_remotepairing(udid, host, port),
+                    CONNECT_TIMEOUT,
+                )
+            except Exception as e:
+                print(
+                    f"REMOTEPAIRING connect {host}:{port}: {type(e).__name__}",
+                    flush=True,
+                )
+                continue
+            if conn is None:
+                print(f"REMOTEPAIRING connect {host}:{port}: timeout", flush=True)
+                continue
+            print(
+                f"REMOTEPAIRING picked {host}:{port} candidates={len(endpoints)}",
+                flush=True,
+            )
+            return [conn]
+        return []
+    return []
+
+
+async def _cleanup_accessory_session(services: list[Any], stack: AsyncExitStack) -> None:
+    try:
+        await _close_pairing_services(services)
+        await stack.aclose()
+    except Exception:
+        pass
+    finally:
+        try:
+            from pymobiledevice3.remote import tunnel_service
+
+            tunnel_service.USE_USERSPACE_TUNNEL = False
+        except Exception:
+            pass
 
 
 async def _accessories_via_remotepairing(
     host: str | None = None, udid: str | None = None
 ) -> dict[str, Any]:
     """List accessories exposed by a paired device via CompanionProxy."""
+    global _accessory_cleanup, _accessory_inflight
     from pymobiledevice3.remote import tunnel_service
     from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
     from pymobiledevice3.remote.userspace_tunnel import UserspaceDialPlane, UserspaceTun
@@ -499,9 +714,25 @@ async def _accessories_via_remotepairing(
         result["error"] = "udid required"
         return result
 
+    # A timed-out poll leaves the previous open running so its close still
+    # happens. Do not stack another tunnel behind it.
+    current = asyncio.current_task()
+    previous = _accessory_inflight
+    if previous is not None and previous is not current and not previous.done():
+        result["error"] = "previous RemotePairing still open"
+        return result
+    _accessory_inflight = current
+
+    if _accessory_cleanup is not None and not _accessory_cleanup.done():
+        try:
+            await asyncio.shield(_accessory_cleanup)
+        except Exception:
+            pass
+
     tunnel_service.USE_USERSPACE_TUNNEL = True
     tunnel_service.RemotePairingTcpTunnel.REQUESTED_MTU = DEFAULT_MTU
     stack = AsyncExitStack()
+    services: list[Any] = []
     try:
         if not has_remote_pair_record(use_udid):
             print(
@@ -509,9 +740,8 @@ async def _accessories_via_remotepairing(
                 flush=True,
             )
             return result
-        services = await _browse_remotepairing_services(use_udid)
+        services = await _browse_remotepairing_services(use_udid, prefer_host=use_host)
         if not services:
-            await diagnose_companion_async(use_udid, use_host)
             raise RuntimeError(
                 "no RemotePairing on Bonjour; unlock the device and keep Wi‑Fi on"
             )
@@ -525,6 +755,7 @@ async def _accessories_via_remotepairing(
             flush=True,
         )
         stack.push_async_callback(provider.close)
+        services = []
         tunnel_result = await stack.enter_async_context(provider.start_tcp_tunnel())
         print(f"TUNNEL_OK {tunnel_result.address} rsd={tunnel_result.port}", flush=True)
         tun = cast(UserspaceTun, tunnel_result.client.tun)
@@ -595,11 +826,12 @@ async def _accessories_via_remotepairing(
         result["accessories"] = accessories
         return result
     finally:
-        try:
-            await asyncio.wait_for(stack.aclose(), timeout=5)
-        except Exception:
-            pass
-        tunnel_service.USE_USERSPACE_TUNNEL = False
+        # Detach the teardown. Awaiting it here is what a poll timeout cancels,
+        # and a cancelled SSL close leaves the fd open. The next open waits.
+        pending = list(services)
+        _accessory_cleanup = asyncio.create_task(
+            _cleanup_accessory_session(pending, stack)
+        )
 
 
 async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -672,18 +904,23 @@ async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = 
             entry["stale"] = False
 
     accessories_ok = False
+    merged = False
     try:
-        scan = await asyncio.wait_for(
-            _accessories_via_remotepairing(host=entry.get("host") or host, udid=udid),
-            timeout=ACCESSORY_TIMEOUT,
+        scan_task = asyncio.create_task(
+            _accessories_via_remotepairing(host=entry.get("host") or host, udid=udid)
         )
+        done, _pending = await asyncio.wait({scan_task}, timeout=ACCESSORY_TIMEOUT)
+        if scan_task not in done:
+            # Leave the task running so its teardown still closes the socket.
+            raise TimeoutError(
+                f"accessories timed out after {int(ACCESSORY_TIMEOUT)}s"
+            )
+        scan = scan_task.result()
         found = scan.get("accessories") or []
-        if found:
-            ts = datetime.now(timezone.utc).isoformat()
-            entry["accessories"] = [
-                {**a, "stale": False, "updated_at": ts} for a in found
-            ]
-            accessories_ok = True
+        ts = datetime.now(timezone.utc).isoformat()
+        entry["accessories"] = merge_accessories(prev_acc, found, ts)
+        merged = True
+        accessories_ok = bool(found)
         if not device_ok:
             rsd_live = scan.get("device")
             if (
@@ -726,7 +963,7 @@ async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = 
         errors.append(f"accessories: {type(e).__name__}: {e}")
         print(f"ACCESSORY_FAIL {type(e).__name__}: {e}", flush=True)
 
-    if not accessories_ok:
+    if not merged:
         entry["accessories"] = mark_accessories_stale(list(prev_acc))
 
     if errors:
@@ -743,11 +980,10 @@ async def fetch_device(dev: dict[str, Any], prev_entry: dict[str, Any] | None = 
 async def fetch_once() -> dict[str, Any]:
     store = load_store()
     devices = list(store.get("devices") or [])
-    if devices:
-        await asyncio.gather(
-            *[_refresh_device_host(dev) for dev in devices],
-            return_exceptions=True,
-        )
+    # One phone at a time. A parallel gather shares one timeout, so the
+    # cancellation of a hung tunnel also drops the other phone's sockets.
+    for dev in devices:
+        await _refresh_device_host(dev)
 
     prev = _load_prev()
     prev_by = {d.get("udid"): d for d in (prev.get("devices") or []) if d.get("udid")}
@@ -764,10 +1000,12 @@ async def fetch_once() -> dict[str, Any]:
         return doc
 
     errors: list[str] = []
-    results = await asyncio.gather(
-        *[fetch_device(dev, prev_by.get(dev["udid"])) for dev in devices],
-        return_exceptions=True,
-    )
+    results = []
+    for dev in devices:
+        try:
+            results.append(await fetch_device(dev, prev_by.get(dev["udid"])))
+        except Exception as exc:
+            results.append(exc)
     still = registered_udids()
     for dev, result in zip(devices, results):
         if dev.get("udid") not in still:
@@ -829,12 +1067,28 @@ async def poll_cycle() -> dict[str, Any]:
         return doc
 
 
-async def loop() -> None:
+def _open_fd_count() -> int:
+    try:
+        return len(os.listdir("/proc/self/fd"))
+    except OSError:
+        return -1
+
+
+async def loop() -> int:
     while True:
         store = load_store()
         poll = int(store.get("poll_seconds") or os.environ.get("IDEVICE_POLL_SEC") or 180)
+        before = _open_fd_count()
         doc = await poll_cycle()
         _write(doc)
+        after = _open_fd_count()
+        if before >= 0 and after >= 0:
+            print(f"[fd] open files {before} → {after}", flush=True)
+        # 1024 is the container default. Dying inside the lock open left HA
+        # without a publish for the rest of the day.
+        if after > 512:
+            print(f"[fd] {after} open files — exiting so the app restarts clean", flush=True)
+            return 75
         await asyncio.sleep(poll)
 
 
@@ -848,8 +1102,7 @@ def main() -> int:
         print(json.dumps(doc, indent=2, default=str))
         _write(doc)
         return 0 if doc.get("devices") else 1
-    asyncio.run(loop())
-    return 0
+    return asyncio.run(loop())
 
 
 if __name__ == "__main__":

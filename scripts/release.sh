@@ -51,7 +51,7 @@ today=$(date +%F)
 grep -q "^## $version " "$CHANGELOG" ||
 	die "aggiungi prima la sezione '## $version — $today' in $CHANGELOG (in cima)"
 
-top=$(sed -n 's/^## \([0-9.]*\) .*/\1/p' "$CHANGELOG" | head -1)
+top=$(sed -n '/^## [0-9]/{s/^## \([0-9.]*\) .*/\1/p; q;}' "$CHANGELOG")
 [ "$top" = "$version" ] || die "la sezione più in alto di $CHANGELOG è $top, non $version"
 
 summary="${2:-$(sed -n "/^## $version /,/^## /{/^- /{s/^- //;s/\*\*//g;p;q;}}" "$CHANGELOG")}"

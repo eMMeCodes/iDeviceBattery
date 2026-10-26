@@ -147,6 +147,98 @@ def test_ingress_allowlist():
     assert client_allowed("192.168.1.50", allow_lan=True)
 
 
+def test_merge_accessories_keeps_missing_as_stale():
+    from model import merge_accessories
+
+    previous = [
+        {"udid": "WATCH", "name": "Watch", "battery_level": 80, "stale": False, "product_type": "Watch6,1"},
+        {"udid": "PODS", "name": "Pods", "battery_level": 50, "stale": False, "product_type": "AirPods"},
+    ]
+    found = [{"udid": "PODS", "name": "Pods", "battery_level": 40, "product_type": "AirPods"}]
+    merged = merge_accessories(previous, found, "2026-10-26T00:00:00+00:00")
+    by_udid = {row["udid"]: row for row in merged}
+    assert by_udid["PODS"]["stale"] is False
+    assert by_udid["PODS"]["battery_level"] == 40
+    assert by_udid["WATCH"]["stale"] is True
+    assert by_udid["WATCH"]["battery_level"] == 80
+
+    empty = merge_accessories(previous, [], "2026-10-26T00:00:00+00:00")
+    assert empty and all(row["stale"] for row in empty)
+
+
+def test_settle_timeout_closes_later_without_cancelling():
+    async def scenario():
+        closed = []
+
+        async def slow():
+            await asyncio.sleep(0.15)
+
+            def close():
+                closed.append(True)
+
+            return SimpleNamespace(close=close)
+
+        task = asyncio.create_task(slow())
+        result = await rb.settle(task, 0.05)
+        assert result is None
+        assert not task.cancelled()
+        await asyncio.sleep(0.25)
+        assert task.done()
+        assert closed == [True]
+
+    asyncio.run(scenario())
+
+
+def test_settle_cancel_does_not_cancel_inner():
+    async def scenario():
+        finished = asyncio.Event()
+
+        async def slow():
+            await asyncio.sleep(0.15)
+            finished.set()
+            return SimpleNamespace(close=lambda: None)
+
+        task = asyncio.create_task(slow())
+        outer = asyncio.create_task(rb.settle(task, 2))
+        await asyncio.sleep(0.02)
+        outer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await outer
+        assert not task.cancelled()
+        await asyncio.sleep(0.25)
+        assert finished.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_remotepairing_endpoints_prefer_saved_host():
+    from rsd_battery import remotepairing_endpoints
+
+    addr = lambda ip: SimpleNamespace(ip=ip, full_ip=ip)
+    answers = [
+        SimpleNamespace(port=49152, host="other.local", addresses=[addr("10.0.0.8")]),
+        SimpleNamespace(port=49153, host="phone.local", addresses=[addr("192.168.1.94")]),
+    ]
+    endpoints = remotepairing_endpoints(answers, prefer_host="192.168.1.94")
+    assert endpoints[0] == ("192.168.1.94", 49153)
+
+
+def test_remotepairing_endpoints_keep_one_ipv4_first():
+    from rsd_battery import remotepairing_endpoints
+
+    addr = lambda ip: SimpleNamespace(ip=ip, full_ip=ip)
+    answers = [
+        SimpleNamespace(port=49152, host="phone.local", addresses=[addr("fe80::1"), addr("192.168.1.36")]),
+        SimpleNamespace(port=49152, host="phone.local", addresses=[addr("192.168.1.36")]),
+        SimpleNamespace(port=49153, host="", addresses=[addr("192.168.1.94")]),
+    ] * 10
+    endpoints = remotepairing_endpoints(answers)
+    assert endpoints[0][0] == "192.168.1.36"
+    assert ("192.168.1.36", 49152) in endpoints
+    assert len(endpoints) == len(set(endpoints))
+    assert all(not ip.startswith("fe80:") for ip, _ in endpoints)
+
+
 def test_pick_one_remotepairing_host():
     dup = SimpleNamespace(hostname="10.0.0.8", port=49152)
     want = SimpleNamespace(hostname="192.168.1.20", port=49152)

@@ -144,3 +144,34 @@ def mark_accessories_stale(accessories: list[dict[str, Any]]) -> list[dict[str, 
     for acc in accessories:
         acc["stale"] = True
     return accessories
+
+
+def merge_accessories(
+    previous: list[dict[str, Any]] | None,
+    found: list[dict[str, Any]] | None,
+    updated_at: str | None = None,
+) -> list[dict[str, Any]]:
+    """Fresh CompanionProxy rows replace the same UDID. Missing ones stay, marked stale."""
+    order: list[str] = []
+    by_key: dict[str, dict[str, Any]] = {}
+    for acc in accessories_from_entry({"accessories": previous or []}):
+        key = str(acc.get("udid") or acc.get("name") or "")
+        if not key:
+            continue
+        row = dict(acc)
+        row["stale"] = True
+        by_key[key] = row
+        order.append(key)
+    for raw in found or []:
+        if not isinstance(raw, dict):
+            continue
+        acc = normalize_accessory(raw, stale=False, updated_at=updated_at)
+        if not acc:
+            continue
+        key = str(acc.get("udid") or acc.get("name") or "")
+        if not key:
+            continue
+        if key not in by_key:
+            order.append(key)
+        by_key[key] = acc
+    return [by_key[key] for key in order]

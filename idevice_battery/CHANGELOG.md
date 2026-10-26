@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.32 — 2026-10-26
+
+- Poll opens one RemotePairing socket, not every Bonjour address. The old path kept dozens of SSL sockets after a 3s close and the process died with `Too many open files` on `devices.lock` / `battery.lock`, so MQTT stayed unpublished and the sensors sat on `unavailable`
+- A poll timeout no longer cancels the Apple handshake. The socket is closed when the handshake finishes, including when the iPhone is asleep and `:62078` never answers
+- RemotePairing tries the saved Wi‑Fi address first, then at most one other IPv4
+- An accessory missing from one CompanionProxy reply stays on the card as stale
+- Paired phones are polled one at a time, so one hung tunnel cannot cancel the other
+- If open files still climb past 512, the poller exits and the app restarts instead of crashing inside the lock
+
 ## 0.9.31 — 2026-09-14
 
 - A stale poll keeps the last known `%` on the card instead of hiding it: freshness is the `stale` attribute plus `sensor.idevice_<key>_last_updated`, not a hole where the battery used to be

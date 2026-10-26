@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import subprocess
@@ -312,9 +311,14 @@ def _ipv4_from_neigh(mac: str) -> str:
     return ""
 
 
+_mobdev2_task: asyncio.Task | None = None
+
+
 async def probe_lockdown_port(host: str, *, timeout: float = 3.0) -> bool:
     """True if TCP :62078 accepts a connection (device awake on Wi‑Fi)."""
     import ipaddress
+
+    from rsd_battery import close_later, wait_owned
 
     h = (host or "").strip()
     if not h:
@@ -324,25 +328,25 @@ async def probe_lockdown_port(host: str, *, timeout: float = 3.0) -> bool:
         ipaddress.ip_address(bare)
     except ValueError:
         return False
-    writer = None
     try:
-        conn = asyncio.open_connection(bare, 62078)
-        _reader, writer = await asyncio.wait_for(conn, timeout=timeout)
-        return True
+        pair = await wait_owned(asyncio.open_connection(bare, 62078), timeout)
     except Exception:
         return False
-    finally:
-        if writer is not None:
-            writer.close()
-            with contextlib.suppress(Exception):
-                await writer.wait_closed()
+    if not pair:
+        return False
+    close_later(pair)
+    return True
 
 
 async def _hosts_from_mobdev2(udid: str) -> list[str]:
     """IPs from _apple-mobdev2._tcp Bonjour (lockdown-over-Wi‑Fi), matched by UDID."""
-    hosts: list[str] = []
+    global _mobdev2_task
+    if _mobdev2_task is not None and not _mobdev2_task.done():
+        print("[pair] mobdev2 still in flight", flush=True)
+        return []
     try:
         from pymobiledevice3.lockdown import get_mobdev2_lockdowns
+        from rsd_battery import close_later, settle
 
         async def _collect() -> list[str]:
             found: list[str] = []
@@ -353,19 +357,15 @@ async def _hosts_from_mobdev2(udid: str) -> list[str]:
             ):
                 if ip:
                     found.append(str(ip))
-                try:
-                    await ld.close()
-                except Exception:
-                    try:
-                        await ld.service.close()
-                    except Exception:
-                        pass
+                close_later(ld)
             return found
 
-        hosts = await asyncio.wait_for(_collect(), timeout=8)
+        _mobdev2_task = asyncio.create_task(_collect())
+        hosts = await settle(_mobdev2_task, 8)
     except Exception as e:
         print(f"[pair] mobdev2 browse: {e}", flush=True)
-    return hosts
+        return []
+    return list(hosts or [])
 
 
 def _host_rank(host: str) -> int:
@@ -508,23 +508,6 @@ async def discover_wifi_host_async(
                 hosts.extend(await _bonjour_addresses_for_udid(udid))
             except Exception as e:
                 print(f"[pair] remotepairing browse: {e}", flush=True)
-            try:
-                from pymobiledevice3.remote.tunnel_service import (
-                    get_remote_pairing_tunnel_services,
-                )
-
-                services = await asyncio.wait_for(
-                    get_remote_pairing_tunnel_services(udid=udid),
-                    timeout=8,
-                )
-                for s in services or []:
-                    host = getattr(s, "hostname", None)
-                    if host:
-                        hosts.append(str(host))
-                    with contextlib.suppress(Exception):
-                        await asyncio.wait_for(s.close(), timeout=2)
-            except Exception as e:
-                print(f"[pair] wifi_host tunnel list: {e}", flush=True)
 
         hosts = _dedupe_hosts(hosts)
         last_hosts = hosts
