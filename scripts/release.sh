@@ -54,8 +54,25 @@ grep -q "^## $version " "$CHANGELOG" ||
 top=$(sed -n '/^## [0-9]/{s/^## \([0-9.]*\) .*/\1/p; q;}' "$CHANGELOG")
 [ "$top" = "$version" ] || die "la sezione più in alto di $CHANGELOG è $top, non $version"
 
-summary="${2:-$(sed -n "/^## $version /,/^## /{/^- /{s/^- //;s/\*\*//g;p;q;}}" "$CHANGELOG")}"
+# BSD sed (macOS) rejects the nested braces GNU sed accepts, so the first
+# changelog bullet is read with awk.
+if [ -n "${2:-}" ]; then
+	summary=$2
+else
+	summary=$(awk -v v="$version" '
+		$0 ~ "^## " v " " { in_section = 1; next }
+		in_section && /^## / { exit }
+		in_section && /^- / {
+			sub(/^- /, "")
+			gsub(/\*\*/, "")
+			print
+			exit
+		}
+	' "$CHANGELOG")
+fi
 [ -n "$summary" ] || die "nessun sommario: passalo come secondo argomento"
+subject="$version: $summary"
+[ "${#subject}" -le 100 ] || die "soggetto troppo lungo (${#subject} caratteri, max 100): passa un sommario breve come secondo argomento"
 
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT

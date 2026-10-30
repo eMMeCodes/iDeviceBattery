@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.33 — 2026-10-30
+
+- A Watch poll runs even when the previous RemotePairing handshake is still closing. That new attempt is what wakes a sleeping iPhone; skipping it left the last `%` on the card for hours
+- The tunnel handshake has its own deadline and still closes the socket when it finishes, so the file-descriptor fix stays
+
 ## 0.9.32 — 2026-10-26
 
 - Poll opens one RemotePairing socket, not every Bonjour address. The old path kept dozens of SSL sockets after a 3s close and the process died with `Too many open files` on `devices.lock` / `battery.lock`, so MQTT stayed unpublished and the sensors sat on `unavailable`

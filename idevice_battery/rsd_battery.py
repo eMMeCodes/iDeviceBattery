@@ -714,20 +714,21 @@ async def _accessories_via_remotepairing(
         result["error"] = "udid required"
         return result
 
-    # A timed-out poll leaves the previous open running so its close still
-    # happens. Do not stack another tunnel behind it.
+    # A timed-out poll leaves the previous handshake running so its close
+    # still happens (cancelling it leaked the SSL fd). That must not skip
+    # this poll: a new RemotePairing is what wakes a sleeping iPhone and
+    # lets the Watch report, which is how 0.9.30 behaved.
     current = asyncio.current_task()
     previous = _accessory_inflight
     if previous is not None and previous is not current and not previous.done():
-        result["error"] = "previous RemotePairing still open"
-        return result
+        print(
+            "REMOTEPAIRING previous attempt still closing — opening a new one",
+            flush=True,
+        )
     _accessory_inflight = current
 
     if _accessory_cleanup is not None and not _accessory_cleanup.done():
-        try:
-            await asyncio.shield(_accessory_cleanup)
-        except Exception:
-            pass
+        await settle(_accessory_cleanup, 2)
 
     tunnel_service.USE_USERSPACE_TUNNEL = True
     tunnel_service.RemotePairingTcpTunnel.REQUESTED_MTU = DEFAULT_MTU
@@ -756,20 +757,48 @@ async def _accessories_via_remotepairing(
         )
         stack.push_async_callback(provider.close)
         services = []
-        tunnel_result = await stack.enter_async_context(provider.start_tcp_tunnel())
+        # Bound the handshake. wait_owned does not cancel it: the socket is
+        # closed when the handshake finishes, and this poll can end so the
+        # next one is free to wake the phone again.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + ACCESSORY_TIMEOUT
+
+        def remaining() -> float:
+            left = deadline - loop.time()
+            if left < 0.5:
+                raise TimeoutError("accessory tunnel deadline")
+            return left
+
+        tunnel_result = await wait_owned(
+            stack.enter_async_context(provider.start_tcp_tunnel()),
+            min(12.0, remaining()),
+        )
+        if tunnel_result is None:
+            raise TimeoutError("tcp tunnel")
         print(f"TUNNEL_OK {tunnel_result.address} rsd={tunnel_result.port}", flush=True)
         tun = cast(UserspaceTun, tunnel_result.client.tun)
         tun.set_peer(tunnel_result.address)
-        dial = await stack.enter_async_context(
-            UserspaceDialPlane(tun, tunnel_result.address)
+        dial = await wait_owned(
+            stack.enter_async_context(
+                UserspaceDialPlane(tun, tunnel_result.address)
+            ),
+            min(8.0, remaining()),
         )
+        if dial is None:
+            raise TimeoutError("userspace dial")
         rsd = RemoteServiceDiscoveryService(
             (tunnel_result.address, tunnel_result.port),
             open_connection=dial.dial,
             auxiliary_metadata=tunnel_result.auxiliary_metadata,
         )
         stack.push_async_callback(rsd.close)
-        await rsd.connect()
+
+        async def _rsd_connect() -> bool:
+            await rsd.connect()
+            return True
+
+        if await wait_owned(_rsd_connect(), min(8.0, remaining())) is None:
+            raise TimeoutError("rsd connect")
         print("RSD_OK", flush=True)
 
         rsd_device = await _device_battery_from_rsd(rsd, use_udid)
